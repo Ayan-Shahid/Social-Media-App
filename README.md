@@ -2,7 +2,7 @@
 
 A photo and video sharing app with end-to-end encrypted direct messages.
 
-Originally built in 2022 with the MERN stack (kept in [`legacy/2022`](legacy/2022) for comparison), rebuilt in 2026 with Postgres, row-level security, and a security-first API. See [docs/CHANGES.md](docs/CHANGES.md) for what changed and why.
+Originally built in 2022 with the MERN stack (kept in [`legacy/2022`](legacy/2022) for comparison), rebuilt in 2026 with Postgres, row-level security, and a security-first API. See [docs/CHANGES.md](docs/CHANGES.md) for what changed and why, and [docs/v2/ROADMAP.md](docs/v2/ROADMAP.md) for what comes next.
 
 ## Features
 
