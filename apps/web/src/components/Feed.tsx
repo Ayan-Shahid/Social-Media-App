@@ -9,7 +9,7 @@ import { Spinner } from "./ui";
 export function useInfinitePosts(key: unknown[], path: string) {
   return useInfiniteQuery({
     queryKey: key,
-    queryFn: ({ pageParam }) => api<Page<Post>>(`${path}${pageParam ? `${path.includes("?") ? "&" : "?"}cursor=${pageParam}` : ""}`),
+    queryFn: ({ pageParam }) => api<Page<Post>>(`${path}${pageParam ? `${path.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(pageParam)}` : ""}`),
     initialPageParam: "",
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
@@ -21,7 +21,7 @@ export function LoadMore({ q }: { q: ReturnType<typeof useInfinitePosts> }) {
   useEffect(() => {
     const el = ref.current;
     if (!el || !q.hasNextPage) return;
-    const io = new IntersectionObserver((e) => { if (e[0]?.isIntersecting && !q.isFetchingNextPage) q.fetchNextPage(); }, { rootMargin: "600px" });
+    const io = new IntersectionObserver((e) => { if (e[0]?.isIntersecting && !q.isFetchingNextPage) q.fetchNextPage(); }, { rootMargin: "800px" });
     io.observe(el);
     return () => io.disconnect();
   }, [q]);
@@ -35,7 +35,7 @@ export function FeedList({ q, empty }: { q: ReturnType<typeof useInfinitePosts>;
   if (!posts.length) return <>{empty}</>;
   return (
     <div className="space-y-8">
-      {posts.map((p, i) => <PostCard key={p.id} post={p} priority={i < 2} />)}
+      {posts.map((p, i) => <PostCard key={`${p.id}-${p.repostedBy?.id ?? ""}`} post={p} priority={i < 2} />)}
       <LoadMore q={q} />
     </div>
   );

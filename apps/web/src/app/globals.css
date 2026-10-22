@@ -22,29 +22,86 @@
 
 @layer base {
   html { -webkit-text-size-adjust: 100%; }
-  body { @apply bg-fog text-ink font-sans antialiased; }
-  :focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; border-radius: 4px; }
+  /* The shader paints the wall; this image is the fallback until (or if) WebGL starts. */
+  body { @apply text-ink font-sans antialiased; background: var(--color-fog) url("/textures/bg-static.webp") center / cover fixed; }
+  html.gl-on body { background: transparent; }
+  :focus-visible { outline: 2px solid var(--color-stamp); outline-offset: 2px; border-radius: 6px; }
   ::selection { background: var(--color-stamp); color: white; }
 }
 
 @layer components {
-  /* Wide Archivo: used only for the wordmark and page titles. */
   .display { font-family: var(--font-display); font-stretch: 125%; font-weight: 750; letter-spacing: -0.01em; }
-  /* A photo printed on paper: white mat, soft lift off the wall. */
-  .print { background: var(--color-paper); padding: 10px 10px 0; box-shadow: 0 1px 0 rgb(20 22 26 / 0.06), 0 12px 30px -18px rgb(20 22 26 / 0.35); }
-  /* The camera date imprint. */
   .stamp {
     font-family: var(--font-stamp); font-weight: 800; color: var(--color-stamp); letter-spacing: 0.08em;
     text-shadow: 0 0 6px rgb(242 105 27 / 0.55), 0 0 1px rgb(255 170 120 / 0.9);
   }
+
+  /* Surfaces. With WebGL on, the shader draws the paper (data-surface); CSS keeps a faint veil so
+     edges stay crisp while scrolling. Without WebGL, they're plain white. */
+  [data-surface] { background: var(--color-paper); }
+  html.gl-on [data-surface] { background: rgb(255 255 255 / 0.18); }
+  .print { padding: 10px 10px 0; }
+
+  /* ---------- Buttons: grainy mesh-gradient WebP + flat 1px border. No shadows, no bevels. ---------- */
+  .btn {
+    position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+    border-radius: 999px; padding: 0.55rem 1.1rem; font-size: 0.875rem; font-weight: 600; line-height: 1.1;
+    border: 1px solid transparent; background-size: 180% 180%; background-position: 0% 50%;
+    transition: background-position 700ms cubic-bezier(.2,.7,.2,1), border-color 200ms, transform 120ms, filter 200ms, color 200ms;
+    user-select: none; isolation: isolate; overflow: hidden; cursor: pointer;
+  }
+  .btn:hover:not(:disabled) { background-position: 100% 30%; }
+  .btn:active:not(:disabled) { transform: scale(0.965); filter: brightness(0.94); transition-duration: 700ms, 200ms, 60ms, 60ms, 200ms; }
+  .btn:disabled { cursor: not-allowed; filter: grayscale(0.55); opacity: 0.55; }
+  .btn[data-loading="true"] { cursor: progress; animation: btn-shimmer 1.4s linear infinite; }
+  .btn[data-loading="true"] > * { opacity: 0.85; }
+
+  .btn-ink { background-image: url("/textures/btn-ink.webp"); color: #fff; border-color: rgb(255 255 255 / 0.14); }
+  .btn-ink:hover:not(:disabled) { border-color: rgb(242 105 27 / 0.65); }
+  .btn-stamp { background-image: url("/textures/btn-stamp.webp"); color: #fff; border-color: rgb(120 36 6 / 0.35); }
+  .btn-stamp:hover:not(:disabled) { border-color: rgb(120 36 6 / 0.7); }
+  .btn-line { background-image: url("/textures/btn-paper.webp"); color: var(--color-ink); border-color: var(--color-rule); }
+  .btn-line:hover:not(:disabled) { border-color: var(--color-ink); }
+  .btn-sm { padding: 0.35rem 0.8rem; font-size: 0.8125rem; }
+  .btn-icon { padding: 0; width: 2.75rem; height: 2.75rem; }
+
+  .field {
+    width: 100%; border-radius: 0.8rem; border: 1px solid var(--color-rule); background: rgb(255 255 255 / 0.85);
+    padding: 0.62rem 0.9rem; font-size: 15px; outline: none; transition: border-color 150ms, background 150ms;
+  }
+  .field::placeholder { color: rgb(91 97 107 / 0.7); }
+  .field:focus { border-color: var(--color-ink); background: #fff; }
+  .label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-graphite); }
+
+  .chip { @apply inline-flex items-center gap-1 rounded-full border border-rule bg-white/70 px-3 py-1 text-[13px] font-medium transition hover:border-ink; }
 }
 
-@utility btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50; }
-@utility btn-ink { @apply btn bg-ink text-white hover:bg-black; }
-@utility btn-line { @apply btn border border-rule bg-paper text-ink hover:border-ink; }
-@utility field { @apply w-full rounded-xl border border-rule bg-paper px-3.5 py-2.5 text-[15px] outline-none transition placeholder:text-graphite/70 focus:border-ink; }
-@utility label { @apply text-[12px] font-semibold uppercase tracking-[0.12em] text-graphite; }
+/* ---------- Motion ---------- */
+@keyframes btn-shimmer { from { background-position: 0% 50%; } to { background-position: 200% 50%; } }
+
+/* Like: the heart pops, and eight dots burst out of it. */
+@keyframes heart-pop { 0% { transform: scale(1); } 25% { transform: scale(1.38); } 55% { transform: scale(0.92); } 100% { transform: scale(1); } }
+.heart-pop { animation: heart-pop 420ms cubic-bezier(.2,.8,.3,1.2); }
+@keyframes burst { from { transform: rotate(var(--a)) translateY(0) scale(1); opacity: 1; } to { transform: rotate(var(--a)) translateY(-20px) scale(0.2); opacity: 0; } }
+.burst > i { position: absolute; left: 50%; top: 50%; width: 5px; height: 5px; margin: -2.5px; border-radius: 99px; background: var(--color-heart); animation: burst 520ms ease-out forwards; }
+.burst > i:nth-child(even) { background: var(--color-stamp); width: 4px; height: 4px; }
+
+/* Double-tap a photo: a big heart blooms and fades. */
+@keyframes heart-flash { 0% { transform: scale(0.2); opacity: 0; } 18% { transform: scale(1.15); opacity: 0.95; } 40% { transform: scale(0.95); } 70% { transform: scale(1); opacity: 0.95; } 100% { transform: scale(1.05); opacity: 0; } }
+.heart-flash { animation: heart-flash 900ms ease-out forwards; }
+
+/* A just-published photo "develops" like an instant print: pale and soft, then full colour. */
+@keyframes develop {
+  0% { filter: sepia(0.85) saturate(0.25) brightness(1.55) contrast(0.55) blur(7px); }
+  45% { filter: sepia(0.45) saturate(0.6) brightness(1.2) contrast(0.8) blur(2px); }
+  100% { filter: none; }
+}
+.developing { animation: develop 2600ms cubic-bezier(.3,.1,.2,1) both; }
+
+@keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+.rise { animation: rise 360ms cubic-bezier(.2,.8,.2,1) both; }
+@keyframes story-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }

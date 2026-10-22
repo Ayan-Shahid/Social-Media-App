@@ -5,6 +5,8 @@ import { useState } from "react";
 import { useSession } from "@/lib/session";
 import { ApiError } from "@/lib/api";
 import { ErrorText } from "@/components/ui";
+import { Button } from "@/components/Button";
+import { GoogleButton } from "@/components/GoogleButton";
 
 export default function RegisterPage() {
   const { register } = useSession();
@@ -31,9 +33,10 @@ export default function RegisterPage() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4" noValidate>
+    <form onSubmit={onSubmit} data-surface className="space-y-4 rounded-2xl p-6" noValidate>
       <h1 className="display text-[30px] lg:hidden">Glimpse<span className="text-stamp">.</span></h1>
       <h2 className="text-[22px] font-semibold">Create your account</h2>
+      <GoogleButton />
       <label className="block space-y-1.5"><span className="label">Username</span>
         <input name="username" autoComplete="username" required pattern="[a-zA-Z0-9_.]{3,30}" className="field" />
         <ErrorText>{fields.username}</ErrorText></label>
@@ -47,7 +50,7 @@ export default function RegisterPage() {
         Your password also locks your message key. We can&apos;t read your messages, so if you forget it, old messages can&apos;t be recovered.
       </p>
       <ErrorText>{error}</ErrorText>
-      <button className="btn-ink w-full py-3" disabled={busy}>{busy ? "Setting up your account…" : "Create account"}</button>
+      <Button className="w-full py-3" loading={busy}>{busy ? "Setting up your account…" : "Create account"}</Button>
       <p className="text-center text-[14px] text-graphite">Have an account? <Link href="/login" className="font-semibold text-ink">Log in</Link></p>
     </form>
   );

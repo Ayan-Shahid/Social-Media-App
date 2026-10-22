@@ -1,35 +1,60 @@
 "use client";
+// Direct and group chats, end-to-end encrypted in the browser (DECISIONS.md D7).
+// The server stores ciphertext and wrapped group keys only; everything here decrypts locally.
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { api, ApiError, newIdempotencyKey } from "@/lib/api";
 import { clockTime, timeAgo } from "@/lib/dates";
-import { decryptMessage, encryptMessage, safetyCode } from "@/lib/e2ee";
+import {
+  decryptGroup, decryptMessage, encryptGroup, encryptMessage, newGroupKey, safetyCode, unwrapGroupKey, wrapGroupKey,
+} from "@/lib/e2ee";
 import { usePresence } from "@/lib/realtime";
 import { useSession } from "@/lib/session";
-import type { Conversation, EncryptedMessage } from "@/lib/types";
+import type { Conversation, EncryptedMessage, User } from "@/lib/types";
+import { Button } from "./Button";
 import { Avatar, Empty, ErrorText, Spinner } from "./ui";
-import { BackIcon, LockIcon, SendIcon } from "./icons";
+import { BackIcon, CloseIcon, LockIcon, PlusIcon, SendIcon, UsersIcon } from "./icons";
+
+const MAX_GROUP = 32;
 
 export function useConversations() {
   return useQuery({ queryKey: ["conversations"], queryFn: () => api<{ conversations: Conversation[] }>("/api/conversations").then((r) => r.conversations) });
 }
 
+const convName = (c: Conversation) => (c.kind === "group" ? c.title ?? "Group" : c.otherUser?.username ?? "Deleted user");
+
+function GroupAvatar({ c, size }: { c: Conversation; size: number }) {
+  const [a, b] = c.members.map((m) => m.user);
+  return (
+    <span className="relative inline-block shrink-0" style={{ width: size, height: size }}>
+      {a && <span className="absolute top-0 left-0"><Avatar user={a} size={size * 0.7} /></span>}
+      {b && <span className="absolute right-0 bottom-0 rounded-full ring-2 ring-white"><Avatar user={b} size={size * 0.7} /></span>}
+    </span>
+  );
+}
+
 export function ConversationList({ activeId }: { activeId?: string }) {
   const q = useConversations();
-  const isOnline = usePresence(q.data?.map((c) => c.otherUser.id) ?? []);
+  const directIds = q.data?.flatMap((c) => (c.otherUser ? [c.otherUser.id] : [])) ?? [];
+  const isOnline = usePresence(directIds);
   if (q.isPending) return <div className="p-6"><Spinner /></div>;
-  if (!q.data?.length) return <p className="p-5 text-[14px] text-graphite">No conversations yet. Open someone&apos;s profile and tap Message.</p>;
+  if (!q.data?.length) return <p className="p-5 text-[14px] text-graphite">No conversations yet. Open someone&apos;s profile and tap Message, or start a group.</p>;
   return (
     <ul>
       {q.data.map((c) => (
         <li key={c.id}>
-          <Link href={`/messages/${c.id}`} className={clsx("flex items-center gap-3 px-4 py-3 transition hover:bg-fog", c.id === activeId && "bg-fog")}>
-            <Avatar user={c.otherUser} size={44} online={isOnline(c.otherUser.id)} />
+          <Link href={`/messages/${c.id}`} className={clsx("flex items-center gap-3 px-4 py-3 transition hover:bg-white/50", c.id === activeId && "bg-white/60")}>
+            {c.kind === "group" ? <GroupAvatar c={c} size={44} /> : c.otherUser ? <Avatar user={c.otherUser} size={44} online={isOnline(c.otherUser.id)} /> : null}
             <span className="min-w-0 flex-1">
-              <span className="block truncate font-semibold">{c.otherUser.username}</span>
-              <span className="flex items-center gap-1 text-[13px] text-graphite"><LockIcon className="h-3 w-3" /> {c.lastMessageAt ? timeAgo(c.lastMessageAt) : "New conversation"}</span>
+              <span className="block truncate font-semibold">{convName(c)}</span>
+              <span className="flex items-center gap-1 text-[13px] text-graphite">
+                <LockIcon className="h-3 w-3" />
+                {c.kind === "group" && <>{c.members.length} people · </>}
+                {c.lastMessageAt ? timeAgo(c.lastMessageAt) : "New conversation"}
+              </span>
             </span>
           </Link>
         </li>
@@ -39,36 +64,104 @@ export function ConversationList({ activeId }: { activeId?: string }) {
 }
 
 export function MessagesShell({ activeId, children }: { activeId?: string; children?: React.ReactNode }) {
+  const [creating, setCreating] = useState(false);
   return (
-    <div className="mx-auto flex h-[calc(100dvh-10rem)] max-w-[960px] overflow-hidden rounded-2xl border border-rule bg-paper md:h-[calc(100dvh-5rem)]">
+    <div data-surface className="mx-auto flex h-[calc(100dvh-10rem)] max-w-[980px] overflow-hidden rounded-2xl md:h-[calc(100dvh-5rem)]">
       <aside className={clsx("w-full shrink-0 overflow-y-auto border-rule md:w-80 md:border-r", activeId && "hidden md:block")}>
-        <h1 className="display border-b border-rule px-4 py-4 text-[20px]">Messages</h1>
+        <div className="flex items-center justify-between border-b border-rule px-4 py-4">
+          <h1 className="display text-[20px]">Messages</h1>
+          <button onClick={() => setCreating(true)} className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-graphite hover:text-ink" aria-label="New group">
+            <PlusIcon className="h-5 w-5" /> Group
+          </button>
+        </div>
         <ConversationList activeId={activeId} />
       </aside>
-      <section className={clsx("min-w-0 flex-1", !activeId && "hidden md:flex")}>{children}</section>
+      <section className={clsx("relative min-w-0 flex-1", !activeId && "hidden md:flex")}>{children}</section>
+      {creating && <NewGroupDialog onClose={() => setCreating(false)} />}
     </div>
   );
 }
 
-function UnlockForm() {
-  const { unlock } = useSession();
+// ---------- key setup / unlock ----------
+
+function KeyGate() {
+  const { unlock, setupPasscode, chatKeys } = useSession();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const setup = chatKeys === null; // Google account that has never set up chat keys
+  const isPasscode = chatKeys === "passcode";
   return (
-    <form className="mx-auto max-w-xs space-y-3 text-center" onSubmit={async (e) => {
-      e.preventDefault(); setBusy(true); setError(null);
-      try { await unlock(String(new FormData(e.currentTarget).get("password"))); }
-      catch (err) { setError((err as Error).message); setBusy(false); }
+    <form className="mx-auto max-w-xs space-y-3 py-8 text-center" onSubmit={async (e) => {
+      e.preventDefault();
+      const f = new FormData(e.currentTarget);
+      const secret = String(f.get("secret"));
+      if (setup) {
+        if (secret.length < 8) return setError("Use at least 8 characters.");
+        if (secret !== String(f.get("confirm"))) return setError("The two passcodes don't match.");
+      }
+      setBusy(true); setError(null);
+      try { await (setup ? setupPasscode(secret) : unlock(secret)); }
+      catch (err) { setError(err instanceof ApiError ? err.message : (err as Error).message); setBusy(false); }
     }}>
       <LockIcon className="mx-auto h-8 w-8" />
-      <p className="font-semibold">Unlock your messages on this device</p>
-      <p className="text-[13px] text-graphite">Your messages are end-to-end encrypted. Enter your password to unlock your key here. It never leaves this browser.</p>
-      <input name="password" type="password" autoComplete="current-password" required className="field" aria-label="Password" />
+      <p className="font-semibold">{setup ? "Set a chat passcode" : "Unlock your messages on this device"}</p>
+      <p className="text-[13px] text-graphite">
+        {setup
+          ? "You signed in with Google, so there's no password to protect your message key. Pick a passcode. We can't reset it, and it never leaves this browser."
+          : `Messages are end-to-end encrypted. Enter your ${isPasscode ? "chat passcode" : "password"} to unlock your key here. It never leaves this browser.`}
+      </p>
+      <input name="secret" type="password" autoComplete={setup ? "new-password" : "current-password"} required className="field" aria-label={setup || isPasscode ? "Chat passcode" : "Password"} placeholder={setup || isPasscode ? "Chat passcode" : "Password"} />
+      {setup && <input name="confirm" type="password" autoComplete="new-password" required className="field" aria-label="Confirm passcode" placeholder="Confirm passcode" />}
       <ErrorText>{error}</ErrorText>
-      <button className="btn-ink w-full" disabled={busy}>{busy ? "Unlocking…" : "Unlock"}</button>
+      <Button className="w-full" loading={busy}>{setup ? "Set passcode" : "Unlock"}</Button>
     </form>
   );
 }
+
+// ---------- group keys ----------
+
+const keyCache = new Map<string, string>(); // userId -> public key, for wrappers who have since left
+
+async function publicKeyOf(userId: string, conv: Conversation) {
+  const m = conv.members.find((x) => x.user.id === userId)?.publicKey;
+  if (m) return m;
+  if (!keyCache.has(userId)) keyCache.set(userId, (await api<{ publicKey: string }>(`/api/keys/${userId}`)).publicKey);
+  return keyCache.get(userId)!;
+}
+
+/** Unwraps my copy of each epoch's group key. */
+function useGroupKeys(conv: Conversation | undefined, privateKey: Uint8Array | null) {
+  const enabled = conv?.kind === "group" && !!privateKey;
+  return useQuery({
+    queryKey: ["group-keys", conv?.id],
+    enabled,
+    queryFn: async () => {
+      const r = await api<{ keys: { epoch: number; wrappedBy: string; wrappedKey: string; nonce: string }[] }>(`/api/conversations/${conv!.id}/keys`);
+      const out = new Map<number, Uint8Array>();
+      for (const k of r.keys) {
+        const pk = await publicKeyOf(k.wrappedBy, conv!).catch(() => null);
+        const key = pk ? await unwrapGroupKey(k, pk, privateKey!) : null;
+        if (key) out.set(k.epoch, key);
+      }
+      return out;
+    },
+  });
+}
+
+/** Starts a new epoch with a fresh key wrapped for `memberIds` (also used for add/remove). */
+async function rotate(conv: Conversation, privateKey: Uint8Array, change: { add?: User[]; remove?: string[] } = {}) {
+  const remaining = conv.members.filter((m) => !change.remove?.includes(m.user.id)).map((m) => m.user.id);
+  const ids = [...new Set([...remaining, ...(change.add ?? []).map((u) => u.id)])];
+  const withKeys = await Promise.all(ids.map(async (userId) => ({ userId, publicKey: await publicKeyOf(userId, conv) })));
+  const key = await newGroupKey();
+  const wraps = await wrapGroupKey(key, withKeys, privateKey);
+  return api<{ epoch: number }>(`/api/conversations/${conv.id}/rotate`, {
+    method: "POST",
+    body: { expectedEpoch: conv.currentEpoch, add: (change.add ?? []).map((u) => u.id), remove: change.remove ?? [], wraps },
+  });
+}
+
+// ---------- thread ----------
 
 type Pending = { key: string; text: string; failed?: boolean };
 
@@ -77,90 +170,164 @@ export function Thread({ id }: { id: string }) {
   const qc = useQueryClient();
   const conv = useQuery({ queryKey: ["conversation", id], queryFn: () => api<{ conversation: Conversation }>(`/api/conversations/${id}`).then((r) => r.conversation) });
   const msgs = useQuery({ queryKey: ["messages", id], queryFn: () => api<{ messages: EncryptedMessage[] }>(`/api/conversations/${id}/messages`).then((r) => r.messages) });
-  const isOnline = usePresence(conv.data ? [conv.data.otherUser.id] : []);
+  const groupKeys = useGroupKeys(conv.data, privateKey);
+  const c = conv.data;
+  const isGroup = c?.kind === "group";
+  const isOnline = usePresence(c?.otherUser ? [c.otherUser.id] : []);
   const [plain, setPlain] = useState<Record<string, string | null>>({});
   const [pending, setPending] = useState<Pending[]>([]);
   const [text, setText] = useState("");
   const [code, setCode] = useState<string | null>(null);
-  const [showCode, setShowCode] = useState(false);
+  const [panel, setPanel] = useState<"none" | "safety" | "group">("none");
   const bottom = useRef<HTMLDivElement>(null);
-  const theirKey = conv.data?.otherPublicKey ?? null;
+  const theirKey = c?.otherPublicKey ?? null;
 
-  // Decrypt in the browser. The server only ever had ciphertext.
+  // Decrypt locally. Group messages use the key of the epoch they were sent in.
   useEffect(() => {
-    if (!privateKey || !theirKey || !msgs.data) return;
+    if (!privateKey || !msgs.data || !c) return;
+    if (isGroup && !groupKeys.data) return;
+    if (!isGroup && !theirKey) return;
     let cancelled = false;
     (async () => {
       const out: Record<string, string | null> = {};
-      for (const m of msgs.data) out[m.id] = plain[m.id] !== undefined ? plain[m.id]! : await decryptMessage(m, theirKey, privateKey);
+      for (const m of msgs.data) {
+        if (plain[m.id] !== undefined && plain[m.id] !== null) { out[m.id] = plain[m.id]!; continue; }
+        if (isGroup) {
+          const k = m.epoch ? groupKeys.data!.get(m.epoch) : undefined;
+          out[m.id] = k ? await decryptGroup(m, k) : null;
+        } else out[m.id] = await decryptMessage(m, theirKey!, privateKey);
+      }
       if (!cancelled) setPlain(out);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [msgs.data, privateKey, theirKey]);
+  }, [msgs.data, privateKey, theirKey, groupKeys.data, isGroup]);
 
-  useEffect(() => { if (myPublicKey && theirKey) safetyCode(myPublicKey, theirKey).then(setCode); }, [myPublicKey, theirKey]);
+  useEffect(() => { if (!isGroup && myPublicKey && theirKey) safetyCode(myPublicKey, theirKey).then(setCode); }, [myPublicKey, theirKey, isGroup]);
   useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [plain, pending.length]);
 
-  async function send(item: Pending) {
-    if (!privateKey || !theirKey) return;
+  const refresh = useCallback(async () => {
+    const fresh = await qc.fetchQuery({ queryKey: ["conversation", id], queryFn: () => api<{ conversation: Conversation }>(`/api/conversations/${id}`).then((r) => r.conversation), staleTime: 0 });
+    await qc.invalidateQueries({ queryKey: ["group-keys", id] });
+    return fresh;
+  }, [qc, id]);
+
+  async function encryptFor(textToSend: string, attempt = 0): Promise<{ ciphertext: string; nonce: string; epoch?: number }> {
+    if (!privateKey || !c) throw new Error("locked");
+    if (!isGroup) return encryptMessage(textToSend, theirKey!, privateKey);
+    let current = qc.getQueryData<Conversation>(["conversation", id]) ?? c;
+    // Someone left: they still know the current key, so the next sender starts a new epoch first.
+    if (current.needsRotation) {
+      await rotate(current, privateKey).catch((e) => { if (!(e instanceof ApiError && e.status === 409)) throw e; });
+      current = await refresh();
+    }
+    let keys = qc.getQueryData<Map<number, Uint8Array>>(["group-keys", id]);
+    if (!keys?.has(current.currentEpoch)) {
+      await qc.refetchQueries({ queryKey: ["group-keys", id] });
+      keys = qc.getQueryData<Map<number, Uint8Array>>(["group-keys", id]);
+    }
+    const k = keys?.get(current.currentEpoch);
+    if (!k) {
+      if (attempt > 0) throw new ApiError(409, "Couldn't get the group key.");
+      await refresh();
+      return encryptFor(textToSend, attempt + 1);
+    }
+    return { ...(await encryptGroup(textToSend, k)), epoch: current.currentEpoch };
+  }
+
+  async function send(item: Pending, attempt = 0) {
     setPending((p) => p.map((x) => (x.key === item.key ? { ...x, failed: false } : x)));
     try {
-      const enc = await encryptMessage(item.text, theirKey, privateKey);
-      // The same key is reused if this message is retried, so it can never be delivered twice.
-      const r = await api<{ message: EncryptedMessage }>(`/api/conversations/${id}/messages`, { method: "POST", body: enc, idempotencyKey: item.key });
+      const enc = await encryptFor(item.text);
+      // The idempotency key stays the same across retries, so a message can never be stored twice.
+      const r = await api<{ message: EncryptedMessage }>(`/api/conversations/${id}/messages`, { method: "POST", body: enc, idempotencyKey: attempt ? `${item.key}r${attempt}` : item.key });
       setPlain((p) => ({ ...p, [r.message.id]: item.text }));
       qc.setQueryData<EncryptedMessage[]>(["messages", id], (old) => (old && !old.some((x) => x.id === r.message.id) ? [...old, r.message] : old));
       setPending((p) => p.filter((x) => x.key !== item.key));
       qc.invalidateQueries({ queryKey: ["conversations"] });
     } catch (e) {
+      // Group key changed under us (rotation by someone else): reload keys and re-encrypt once.
+      if (isGroup && e instanceof ApiError && e.status === 409 && attempt === 0) { await refresh(); return send(item, 1); }
       setPending((p) => p.map((x) => (x.key === item.key ? { ...x, failed: true } : x)));
       if (e instanceof ApiError && e.status === 422) setPending((p) => p.filter((x) => x.key !== item.key));
     }
   }
 
   const ordered = useMemo(() => msgs.data ?? [], [msgs.data]);
+  const byId = useMemo(() => new Map(c?.members.map((m) => [m.user.id, m.user]) ?? []), [c]);
 
   if (conv.isError) return <div className="grid flex-1 place-items-center p-6"><Empty title="Conversation not found" /></div>;
-  if (!conv.data || !me) return <div className="grid flex-1 place-items-center"><Spinner /></div>;
-  const other = conv.data.otherUser;
+  if (!c || !me) return <div className="grid flex-1 place-items-center"><Spinner /></div>;
+  const other = c.otherUser;
+  const iLeft = !c.myRole;
+  const canSend = !!privateKey && !iLeft && (isGroup ? !!groupKeys.data : !!theirKey);
 
   return (
     <div className="flex h-full w-full flex-col">
       <header className="flex items-center gap-3 border-b border-rule px-4 py-3">
         <Link href="/messages" className="md:hidden" aria-label="Back to messages"><BackIcon className="h-6 w-6" /></Link>
-        <Link href={`/u/${other.username}`} className="flex min-w-0 items-center gap-3">
-          <Avatar user={other} size={36} online={isOnline(other.id)} />
-          <span className="min-w-0">
-            <span className="block truncate font-semibold leading-tight">{other.username}</span>
-            <span className="text-[12px] text-graphite">{isOnline(other.id) ? "Online" : "Offline"}</span>
-          </span>
-        </Link>
-        <button onClick={() => setShowCode((v) => !v)} className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-fog px-3 py-1.5 text-[12px] font-semibold" aria-expanded={showCode}>
-          <LockIcon className="h-3.5 w-3.5" /> Encrypted
-        </button>
+        {isGroup ? (
+          <button onClick={() => setPanel((p) => (p === "group" ? "none" : "group"))} className="flex min-w-0 items-center gap-3 text-left">
+            <GroupAvatar c={c} size={36} />
+            <span className="min-w-0">
+              <span className="block truncate font-semibold leading-tight">{convName(c)}</span>
+              <span className="text-[12px] text-graphite">{c.members.length} people · key #{c.currentEpoch}</span>
+            </span>
+          </button>
+        ) : other && (
+          <Link href={`/u/${other.username}`} className="flex min-w-0 items-center gap-3">
+            <Avatar user={other} size={36} online={isOnline(other.id)} />
+            <span className="min-w-0">
+              <span className="block truncate font-semibold leading-tight">{other.username}</span>
+              <span className="text-[12px] text-graphite">{isOnline(other.id) ? "Online" : "Offline"}</span>
+            </span>
+          </Link>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          {isGroup && <button onClick={() => setPanel((p) => (p === "group" ? "none" : "group"))} className="rounded-full p-1.5 hover:bg-white/60" aria-label="Group info"><UsersIcon className="h-5 w-5" /></button>}
+          <button onClick={() => setPanel((p) => (p === "safety" ? "none" : "safety"))} className="chip" aria-expanded={panel === "safety"}>
+            <LockIcon className="h-3.5 w-3.5" /> Encrypted
+          </button>
+        </div>
       </header>
-      {showCode && (
-        <div className="border-b border-rule bg-fog/60 px-5 py-4 text-[13px]">
-          <p className="font-semibold">Only you and {other.username} can read these messages.</p>
-          <p className="mt-1 text-graphite">To be sure no one is in the middle, compare this safety code with {other.username} in person or on a call. It should match on both screens.</p>
-          <p className="mt-2 font-mono text-[15px] tracking-wider">{code ?? "…"}</p>
+
+      {panel === "safety" && (
+        <div className="border-b border-rule bg-white/50 px-5 py-4 text-[13px]">
+          {isGroup ? (
+            <>
+              <p className="font-semibold">Only current members can read new messages.</p>
+              <p className="mt-1 text-graphite">Each time someone joins or leaves, a new group key (#{c.currentEpoch} now) is made and sealed separately for every member. People who leave can&apos;t read anything sent after; people who join can&apos;t read anything sent before.</p>
+            </>
+          ) : (
+            <>
+              <p className="font-semibold">Only you and {other?.username} can read these messages.</p>
+              <p className="mt-1 text-graphite">To be sure no one is in the middle, compare this safety code with {other?.username} in person or on a call. It should match on both screens.</p>
+              <p className="mt-2 font-mono text-[15px] tracking-wider">{code ?? "…"}</p>
+            </>
+          )}
         </div>
       )}
 
       <div className="flex-1 space-y-1.5 overflow-y-auto px-4 py-5">
-        {!privateKey ? <UnlockForm /> : !theirKey ? (
-          <p className="text-center text-[14px] text-graphite">{other.username} hasn&apos;t set up encrypted messages yet.</p>
-        ) : msgs.isPending ? <Spinner /> : (
+        {!privateKey ? <KeyGate /> : !isGroup && !theirKey ? (
+          <p className="text-center text-[14px] text-graphite">{other?.username} hasn&apos;t set up encrypted messages yet.</p>
+        ) : msgs.isPending || (isGroup && groupKeys.isPending) ? <Spinner /> : (
           <>
-            {ordered.length === 0 && pending.length === 0 && <p className="py-10 text-center text-[14px] text-graphite">Say hi to {other.username}. Messages are end-to-end encrypted.</p>}
-            {ordered.map((m) => {
+            {ordered.length === 0 && pending.length === 0 && <p className="py-10 text-center text-[14px] text-graphite">Say hi. Messages here are end-to-end encrypted.</p>}
+            {ordered.map((m, i) => {
               const mine = m.senderId === me.id;
               const t = plain[m.id];
+              const sender = byId.get(m.senderId);
+              const showName = isGroup && !mine && ordered[i - 1]?.senderId !== m.senderId;
+              const epochChanged = isGroup && i > 0 && ordered[i - 1]!.epoch !== m.epoch;
               return (
-                <div key={m.id} className={clsx("flex", mine ? "justify-end" : "justify-start")}>
-                  <div className={clsx("max-w-[75%] rounded-2xl px-3.5 py-2 text-[15px] leading-snug", mine ? "bg-ink text-white" : "bg-fog")} title={clockTime(m.createdAt)}>
-                    {t === undefined ? "…" : t === null ? <em className="opacity-70">Can&apos;t decrypt this message</em> : <span className="whitespace-pre-wrap break-words">{t}</span>}
+                <div key={m.id}>
+                  {epochChanged && <p className="my-3 text-center text-[11px] tracking-wide text-graphite uppercase">New group key #{m.epoch}</p>}
+                  {showName && <p className="mt-2 mb-0.5 ml-1 text-[12px] font-semibold text-graphite">{sender?.username ?? "Former member"}</p>}
+                  <div className={clsx("flex", mine ? "justify-end" : "justify-start")}>
+                    <div className={clsx("rise max-w-[75%] rounded-2xl px-3.5 py-2 text-[15px] leading-snug", mine ? "bg-ink text-white" : "bg-white/80 ring-1 ring-rule")} title={clockTime(m.createdAt)}>
+                      {t === undefined ? "…" : t === null ? <em className="opacity-70">{isGroup ? "Sent before you joined, or with a key you don't have" : "Can't decrypt this message"}</em> : <span className="whitespace-pre-wrap break-words">{t}</span>}
+                    </div>
                   </div>
                 </div>
               );
@@ -171,12 +338,13 @@ export function Thread({ id }: { id: string }) {
                 {p.failed && <button onClick={() => send(p)} className="mt-1 text-[12px] font-semibold text-heart">Not sent. Tap to retry</button>}
               </div>
             ))}
+            {iLeft && <p className="py-4 text-center text-[13px] text-graphite">You left this group.</p>}
           </>
         )}
         <div ref={bottom} />
       </div>
 
-      {privateKey && theirKey && (
+      {canSend && (
         <form className="flex items-end gap-2 border-t border-rule p-3" onSubmit={(e) => {
           e.preventDefault();
           const t = text.trim();
@@ -187,9 +355,183 @@ export function Thread({ id }: { id: string }) {
           <textarea value={text} onChange={(e) => setText(e.target.value)} rows={1} maxLength={4000} placeholder="Message…" aria-label="Message"
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }}
             className="field min-h-[44px] flex-1 resize-none rounded-full px-4 py-2.5" />
-          <button className="btn-ink h-11 w-11 p-0" aria-label="Send" disabled={!text.trim()}><SendIcon className="h-5 w-5" /></button>
+          <Button aria-label="Send" disabled={!text.trim()} className="h-11 w-11 !p-0"><SendIcon className="h-5 w-5" /></Button>
         </form>
       )}
+
+      {panel === "group" && isGroup && privateKey && <GroupPanel conv={c} privateKey={privateKey} onClose={() => setPanel("none")} onChanged={refresh} />}
     </div>
+  );
+}
+
+// ---------- people picker ----------
+
+function PeoplePicker({ exclude, picked, onPick }: { exclude: string[]; picked: User[]; onPick: (u: User) => void }) {
+  const [q, setQ] = useState("");
+  const res = useQuery({
+    queryKey: ["user-search", q],
+    enabled: q.trim().length > 0,
+    queryFn: () => api<{ users: User[] }>(`/api/users/search?q=${encodeURIComponent(q.trim())}`).then((r) => r.users),
+  });
+  const shown = (res.data ?? []).filter((u) => !exclude.includes(u.id) && !picked.some((p) => p.id === u.id));
+  return (
+    <div>
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people" aria-label="Search people" className="field" />
+      {q && (
+        <ul className="mt-2 max-h-48 overflow-y-auto">
+          {res.isPending ? <li className="p-2"><Spinner /></li> : shown.length === 0 ? <li className="p-2 text-[13px] text-graphite">No one found.</li> : shown.map((u) => (
+            <li key={u.id}>
+              <button type="button" onClick={() => { onPick(u); setQ(""); }} className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-white/60">
+                <Avatar user={u} size={30} /><span className="font-semibold">{u.username}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function Chips({ users, onRemove }: { users: User[]; onRemove: (id: string) => void }) {
+  if (!users.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {users.map((u) => (
+        <span key={u.id} className="chip">
+          {u.username}
+          <button type="button" onClick={() => onRemove(u.id)} aria-label={`Remove ${u.username}`}><CloseIcon className="h-3 w-3" /></button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-40 grid place-items-center bg-ink/40 p-4 backdrop-blur-sm" onClick={onClose} role="dialog" aria-modal aria-label={title}>
+      <div data-surface className="rise w-full max-w-md space-y-4 rounded-2xl bg-paper p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="display text-[20px]">{title}</h2>
+          <button onClick={onClose} aria-label="Close"><CloseIcon className="h-5 w-5" /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function NewGroupDialog({ onClose }: { onClose: () => void }) {
+  const { me, privateKey } = useSession();
+  const router = useRouter();
+  const qc = useQueryClient();
+  const [title, setTitle] = useState("");
+  const [people, setPeople] = useState<User[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!me) return null;
+
+  async function create() {
+    if (!privateKey) return setError("Unlock your messages first (open any chat).");
+    setBusy(true); setError(null);
+    try {
+      const all = [me!, ...people];
+      const withKeys = await Promise.all(all.map(async (u) => {
+        const r = await api<{ publicKey: string }>(`/api/keys/${u.id}`).catch(() => null);
+        if (!r) throw new ApiError(400, `${u.username} hasn't set up encrypted messages yet.`);
+        return { userId: u.id, publicKey: r.publicKey };
+      }));
+      const key = await newGroupKey();
+      const wraps = await wrapGroupKey(key, withKeys, privateKey);
+      const r = await api<{ conversation: Conversation }>("/api/conversations/group", { method: "POST", body: { title: title.trim(), memberIds: people.map((p) => p.id), wraps } });
+      qc.invalidateQueries({ queryKey: ["conversations"] });
+      onClose();
+      router.push(`/messages/${r.conversation.id}`);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't create the group.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Sheet title="New group" onClose={onClose}>
+      <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={60} placeholder="Group name" aria-label="Group name" className="field" />
+      <Chips users={people} onRemove={(id) => setPeople((p) => p.filter((x) => x.id !== id))} />
+      {people.length < MAX_GROUP - 1 && <PeoplePicker exclude={[me.id]} picked={people} onPick={(u) => setPeople((p) => [...p, u])} />}
+      <p className="text-[12px] text-graphite">A group key is created in your browser and sealed for each person. Up to {MAX_GROUP} people.</p>
+      <ErrorText>{error}</ErrorText>
+      <Button type="button" className="w-full" loading={busy} disabled={!title.trim() || people.length < 2} onClick={create}>
+        {people.length < 2 ? "Add at least 2 people" : "Create group"}
+      </Button>
+    </Sheet>
+  );
+}
+
+function GroupPanel({ conv, privateKey, onClose, onChanged }: { conv: Conversation; privateKey: Uint8Array; onClose: () => void; onChanged: () => Promise<Conversation> }) {
+  const { me } = useSession();
+  const router = useRouter();
+  const qc = useQueryClient();
+  const [adding, setAdding] = useState<User[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const owner = conv.myRole === "owner";
+
+  async function change(label: string, fn: (c: Conversation) => Promise<unknown>) {
+    setBusy(label); setError(null);
+    try {
+      try { await fn(conv); }
+      catch (e) {
+        // Someone else changed the group first: reload and apply our change on top.
+        if (!(e instanceof ApiError && e.status === 409)) throw e;
+        await fn(await onChanged());
+      }
+      await onChanged();
+      setAdding([]);
+    } catch (e) { setError(e instanceof ApiError ? e.message : "That didn't work. Try again."); }
+    finally { setBusy(null); }
+  }
+
+  return (
+    <Sheet title={conv.title ?? "Group"} onClose={onClose}>
+      <ul className="max-h-64 space-y-1 overflow-y-auto">
+        {conv.members.map((m) => (
+          <li key={m.user.id} className="flex items-center gap-2.5">
+            <Avatar user={m.user} size={32} />
+            <span className="min-w-0 flex-1 truncate font-semibold">{m.user.username}{m.user.id === me?.id && <span className="font-normal text-graphite"> (you)</span>}</span>
+            {m.role === "owner" && <span className="text-[12px] text-graphite">Owner</span>}
+            {owner && m.user.id !== me?.id && (
+              <Button variant="line" size="sm" loading={busy === m.user.id} onClick={() => change(m.user.id, (c) => rotate(c, privateKey, { remove: [m.user.id] }))}>Remove</Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {conv.members.length < MAX_GROUP && (
+        <div className="space-y-2 border-t border-rule pt-4">
+          <p className="label">Add people</p>
+          <Chips users={adding} onRemove={(id) => setAdding((a) => a.filter((x) => x.id !== id))} />
+          <PeoplePicker exclude={conv.members.map((m) => m.user.id)} picked={adding} onPick={(u) => setAdding((a) => [...a, u])} />
+          {adding.length > 0 && (
+            <Button loading={busy === "add"} onClick={() => change("add", (c) => rotate(c, privateKey, { add: adding }))}>
+              Add {adding.length} and make a new key
+            </Button>
+          )}
+        </div>
+      )}
+      <ErrorText>{error}</ErrorText>
+      <div className="flex justify-between border-t border-rule pt-4">
+        <Button variant="line" size="sm" loading={busy === "rotate"} onClick={() => change("rotate", (c) => rotate(c, privateKey))}>Make a new key</Button>
+        <Button variant="line" size="sm" loading={busy === "leave"} onClick={async () => {
+          if (!confirm("Leave this group? You won't see new messages.")) return;
+          setBusy("leave");
+          await api(`/api/conversations/${conv.id}/leave`, { method: "POST" }).catch(() => {});
+          qc.invalidateQueries({ queryKey: ["conversations"] });
+          router.replace("/messages");
+        }}>Leave group</Button>
+      </div>
+    </Sheet>
   );
 }

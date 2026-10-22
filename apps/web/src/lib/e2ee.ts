@@ -68,3 +68,38 @@ export async function publicKeyFromPrivate(privateKey: Uint8Array) {
   const s = await sodium();
   return enc(s.crypto_scalarmult_base(privateKey));
 }
+
+// ---------- Group chats (DECISIONS.md D7) ----------
+// One random symmetric key per epoch. It's "wrapped" (crypto_box) for each member with their public
+// key, by whoever starts the epoch. Messages use crypto_secretbox with the epoch's key.
+
+export async function newGroupKey() {
+  const s = await sodium();
+  return s.crypto_secretbox_keygen();
+}
+
+export async function wrapGroupKey(groupKey: Uint8Array, members: { userId: string; publicKey: string }[], myPrivateKey: Uint8Array) {
+  const s = await sodium();
+  return members.map((m) => {
+    const nonce = s.randombytes_buf(s.crypto_box_NONCEBYTES);
+    return { userId: m.userId, wrappedKey: enc(s.crypto_box_easy(groupKey, nonce, dec(m.publicKey), myPrivateKey)), nonce: enc(nonce) };
+  });
+}
+
+export async function unwrapGroupKey(w: { wrappedKey: string; nonce: string }, wrapperPublicKey: string, myPrivateKey: Uint8Array) {
+  const s = await sodium();
+  try { return s.crypto_box_open_easy(dec(w.wrappedKey), dec(w.nonce), dec(wrapperPublicKey), myPrivateKey); }
+  catch { return null; }
+}
+
+export async function encryptGroup(text: string, key: Uint8Array) {
+  const s = await sodium();
+  const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES);
+  return { ciphertext: enc(s.crypto_secretbox_easy(text, nonce, key)), nonce: enc(nonce) };
+}
+
+export async function decryptGroup(m: { ciphertext: string; nonce: string }, key: Uint8Array) {
+  const s = await sodium();
+  try { return s.to_string(s.crypto_secretbox_open_easy(dec(m.ciphertext), dec(m.nonce), key)); }
+  catch { return null; }
+}

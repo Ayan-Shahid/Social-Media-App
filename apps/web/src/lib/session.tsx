@@ -6,14 +6,20 @@ import { createKeys, unlockBackup, publicKeyFromPrivate } from "./e2ee";
 import { clearKeys, loadPrivateKey, savePrivateKey } from "./keystore";
 import type { KeyBackup, User } from "./types";
 
+interface Me { user: User; chatKeys: "password" | "passcode" | null; isAdmin: boolean }
 interface SessionCtx {
   me: User | null | undefined; // undefined = still loading
+  chatKeys: Me["chatKeys"] | undefined;
+  isAdmin: boolean;
   privateKey: Uint8Array | null;
   myPublicKey: string | null;
   login(email: string, password: string): Promise<void>;
   register(username: string, email: string, password: string): Promise<void>;
   logout(): Promise<void>;
-  unlock(password: string): Promise<void>;
+  /** Unlocks the message key with the password (or chat passcode for Google accounts). */
+  unlock(secret: string): Promise<void>;
+  /** Google accounts: first-time setup of message keys protected by a chat passcode. */
+  setupPasscode(passcode: string): Promise<void>;
 }
 
 const Ctx = createContext<SessionCtx | null>(null);
@@ -27,10 +33,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const qc = useQueryClient();
   const meQuery = useQuery({
     queryKey: ["me"],
-    queryFn: () => api<{ user: User }>("/api/auth/me").then((r) => r.user).catch((e) => { if (e instanceof ApiError && e.status === 401) return null; throw e; }),
+    queryFn: () => api<Me>("/api/auth/me").catch((e) => { if (e instanceof ApiError && e.status === 401) return null; throw e; }),
     staleTime: 5 * 60_000,
   });
-  const me = meQuery.data;
+  const data = meQuery.data;
+  const me = data === undefined ? undefined : data?.user ?? null;
   const [privateKey, setPrivateKey] = useState<Uint8Array | null>(null);
   const [myPublicKey, setMyPublicKey] = useState<string | null>(null);
 
@@ -40,7 +47,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setPrivateKey(k ?? null);
       setMyPublicKey(k ? await publicKeyFromPrivate(k) : null);
     }).catch(() => setPrivateKey(null));
-  }, [me]);
+  }, [me?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const adoptKey = useCallback(async (userId: string, key: Uint8Array) => {
     await savePrivateKey(userId, key);
@@ -48,20 +55,22 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setMyPublicKey(await publicKeyFromPrivate(key));
   }, []);
 
+  const refreshMe = useCallback(() => qc.invalidateQueries({ queryKey: ["me"] }), [qc]);
+
   const login = useCallback(async (email: string, password: string) => {
     const r = await api<{ user: User; keyBackup: KeyBackup | null }>("/api/auth/login", { method: "POST", body: { email, password } });
-    if (r.keyBackup) await adoptKey(r.user.id, await unlockBackup(r.keyBackup, password)).catch(() => {});
+    if (r.keyBackup?.kind !== "passcode" && r.keyBackup) await adoptKey(r.user.id, await unlockBackup(r.keyBackup, password)).catch(() => {});
     qc.clear();
-    qc.setQueryData(["me"], r.user);
-  }, [qc, adoptKey]);
+    await refreshMe();
+  }, [qc, adoptKey, refreshMe]);
 
   const register = useCallback(async (username: string, email: string, password: string) => {
     const keys = await createKeys(password);
     const r = await api<{ user: User }>("/api/auth/register", { method: "POST", body: { username, email, password, keys: keys.upload } });
     await adoptKey(r.user.id, keys.privateKey);
     qc.clear();
-    qc.setQueryData(["me"], r.user);
-  }, [qc, adoptKey]);
+    await refreshMe();
+  }, [qc, adoptKey, refreshMe]);
 
   const logout = useCallback(async () => {
     await api("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -71,15 +80,26 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     qc.setQueryData(["me"], null);
   }, [qc]);
 
-  const unlock = useCallback(async (password: string) => {
+  const unlock = useCallback(async (secret: string) => {
     if (!me) return;
     const r = await api<{ keyBackup: KeyBackup | null }>("/api/auth/key-backup");
-    if (!r.keyBackup) throw new Error("No chat key found for this account.");
+    if (!r.keyBackup) throw new Error("No message key found for this account.");
     let key: Uint8Array;
-    try { key = await unlockBackup(r.keyBackup, password); } catch { throw new Error("That password didn't unlock your messages."); }
+    try { key = await unlockBackup(r.keyBackup, secret); } catch { throw new Error(r.keyBackup.kind === "passcode" ? "That passcode didn't unlock your messages." : "That password didn't unlock your messages."); }
     await adoptKey(me.id, key);
   }, [me, adoptKey]);
 
-  const value = useMemo(() => ({ me, privateKey, myPublicKey, login, register, logout, unlock }), [me, privateKey, myPublicKey, login, register, logout, unlock]);
+  const setupPasscode = useCallback(async (passcode: string) => {
+    if (!me) return;
+    const keys = await createKeys(passcode);
+    await api("/api/keys/setup", { method: "POST", body: keys.upload });
+    await adoptKey(me.id, keys.privateKey);
+    await refreshMe();
+  }, [me, adoptKey, refreshMe]);
+
+  const value = useMemo(() => ({
+    me, chatKeys: data === undefined ? undefined : data?.chatKeys ?? null, isAdmin: !!data?.isAdmin,
+    privateKey, myPublicKey, login, register, logout, unlock, setupPasscode,
+  }), [me, data, privateKey, myPublicKey, login, register, logout, unlock, setupPasscode]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

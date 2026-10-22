@@ -1,43 +1,62 @@
 "use client";
-import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import clsx from "clsx";
 import { api, ApiError, newIdempotencyKey } from "@/lib/api";
-import type { Media, Post } from "@/lib/types";
-import { useUpload } from "@/components/Uploader";
-import { DateStamp, ErrorText, PageTitle, Spinner } from "@/components/ui";
-import { ImageIcon } from "@/components/icons";
+import type { Post } from "@/lib/types";
+import { ACCEPT, useMediaStatus, useUploads, type UploadItem } from "@/components/Uploader";
+import { Button } from "@/components/Button";
+import { ErrorText, PageTitle, Spinner } from "@/components/ui";
+import { CloseIcon, ImageIcon } from "@/components/icons";
 
-export default function NewPostPage() {
+function Tile({ item, onRemove, onRetry, onStatus }: { item: UploadItem; onRemove: () => void; onRetry: () => void; onStatus: (ready: boolean, failed: boolean) => void }) {
+  const status = useMediaStatus(item.mediaId);
+  const m = status.data;
+  const ready = m?.status === "ready", failed = m?.status === "failed" || !!item.error;
+  useEffect(() => { onStatus(ready, failed); }, [ready, failed]); // eslint-disable-line react-hooks/exhaustive-deps
+  const isVideo = item.file.type.startsWith("video/");
+  return (
+    <div className="relative aspect-square overflow-hidden rounded-md bg-fog-deep">
+      {isVideo ? <video src={item.preview} muted className="h-full w-full object-cover" /> : (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={item.preview} alt="" className="h-full w-full object-cover" />
+      )}
+      {!ready && !failed && (
+        <span className="absolute inset-0 grid place-items-center bg-white/55 text-center text-[12px] font-semibold backdrop-blur-[1px]">
+          <span className="flex flex-col items-center gap-1.5"><Spinner className="h-4 w-4" />{item.mediaId ? (isVideo ? "Encoding video…" : "Processing…") : "Uploading…"}</span>
+        </span>
+      )}
+      {failed && (
+        <span className="absolute inset-0 grid place-items-center bg-white/85 p-2 text-center text-[12px] text-heart">
+          <span>{item.error ?? m?.error ?? "Failed"}{item.error && <button onClick={onRetry} className="mt-1 block w-full font-semibold underline">Retry</button>}</span>
+        </span>
+      )}
+      <button onClick={onRemove} aria-label="Remove" className="absolute top-1.5 right-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/60 text-white"><CloseIcon className="h-4 w-4" /></button>
+    </div>
+  );
+}
+
+function NewPost() {
   const router = useRouter();
   const qc = useQueryClient();
-  const up = useUpload("post");
-  const [preview, setPreview] = useState<{ url: string; video: boolean } | null>(null);
-  const [media, setMedia] = useState<Media | null>(null);
+  const [kind, setKind] = useState<"post" | "short">(useSearchParams().get("kind") === "short" ? "short" : "post");
+  const up = useUploads(kind === "short" ? "short" : "post", kind === "short" ? 1 : 10);
+  const [states, setStates] = useState<Record<string, { ready: boolean; failed: boolean }>>({});
   const [caption, setCaption] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
-  // One key per post attempt: pressing Share twice (or a retry) still makes exactly one post.
-  const shareKey = useRef(newIdempotencyKey());
-
-  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
-
-  async function pick(file: File | undefined) {
-    if (!file) return;
-    setMedia(null); setError(null);
-    setPreview({ url: URL.createObjectURL(file), video: file.type.startsWith("video/") });
-    const m = await up.upload(file);
-    if (m) setMedia(m); else setPreview(null);
-  }
+  const shareKey = useRef(newIdempotencyKey()); // one key per post attempt: double clicks make one post
+  const allReady = up.items.length > 0 && up.items.every((i) => states[i.localId]?.ready);
 
   async function share() {
-    if (!media || sharing) return;
+    if (!allReady || sharing) return;
     setSharing(true); setError(null);
     try {
-      const r = await api<{ post: Post }>("/api/posts", { method: "POST", body: { mediaId: media.id, caption }, idempotencyKey: shareKey.current });
-      await qc.invalidateQueries({ queryKey: ["feed"] });
-      qc.invalidateQueries({ queryKey: ["explore"] });
-      router.push(`/p/${r.post.id}`);
+      const r = await api<{ post: Post }>("/api/posts", { method: "POST", idempotencyKey: shareKey.current, body: { mediaIds: up.items.map((i) => i.mediaId), caption, kind } });
+      try { sessionStorage.setItem(`develop:${r.post.id}`, "1"); } catch { /* ignore */ }
+      qc.invalidateQueries({ queryKey: ["feed"] });
+      router.push(kind === "short" ? "/shorts" : `/p/${r.post.id}`);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Couldn't share. Try again.");
       setSharing(false);
@@ -45,39 +64,47 @@ export default function NewPostPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[520px]">
-      <PageTitle>New post</PageTitle>
-      <div className="print">
-        {preview ? (
-          <div className="relative aspect-[4/5] overflow-hidden bg-fog-deep">
-            {preview.video
-              ? <video src={media?.url ?? preview.url} controls playsInline className="h-full w-full object-cover" />
-              // eslint-disable-next-line @next/next/no-img-element
-              : <img src={media?.url ?? preview.url} alt="Preview" className="h-full w-full object-cover" />}
-            {up.busy && (
-              <div className="absolute inset-0 grid place-items-center bg-white/60 backdrop-blur-[2px]">
-                <span className="flex items-center gap-2 text-[14px] font-semibold"><Spinner /> Checking and preparing your file…</span>
-              </div>
-            )}
-            {media && <DateStamp iso={new Date().toISOString()} className="absolute right-3 bottom-2.5" />}
-          </div>
-        ) : (
-          <label className="flex aspect-[4/5] cursor-pointer flex-col items-center justify-center gap-3 border-2 border-dashed border-rule bg-fog/50 text-graphite transition hover:border-ink hover:text-ink">
+    <div className="mx-auto max-w-[560px]">
+      <PageTitle right={
+        <div className="flex rounded-full border border-rule bg-white/60 p-0.5 text-[13px] font-semibold">
+          {(["post", "short"] as const).map((k) => (
+            <button key={k} onClick={() => { if (k !== kind) { up.reset(); setStates({}); setKind(k); } }}
+              className={clsx("rounded-full px-3 py-1 transition", kind === k ? "bg-ink text-white" : "text-graphite")}>{k === "post" ? "Post" : "Short"}</button>
+          ))}
+        </div>
+      }>New {kind}</PageTitle>
+      <div data-surface className="rounded-2xl p-4">
+        {up.items.length === 0 ? (
+          <label className="flex aspect-[4/5] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-rule text-graphite transition hover:border-ink hover:text-ink">
             <ImageIcon className="h-10 w-10" />
-            <span className="text-[15px] font-semibold">Choose a photo or video</span>
-            <span className="text-[13px]">JPEG, PNG, WebP, HEIC up to 10 MB · MP4, MOV, WebM up to 60 s</span>
-            <input type="file" accept={up.accept} className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
+            <span className="text-[15px] font-semibold">{kind === "short" ? "Choose a vertical video" : "Choose photos or videos"}</span>
+            <span className="px-6 text-center text-[13px]">{kind === "short" ? "MP4, MOV or WebM, up to 60 seconds" : "Up to 10. Photos up to 10 MB, videos up to 60 s"}</span>
+            <input type="file" multiple={kind === "post"} accept={ACCEPT[kind === "short" ? "short" : "post"]} className="sr-only" onChange={(e) => { if (e.target.files) up.add(e.target.files); e.target.value = ""; }} />
           </label>
+        ) : (
+          <div className="grid grid-cols-3 gap-2">
+            {up.items.map((it) => (
+              <Tile key={it.localId} item={it} onRemove={() => up.remove(it.localId)} onRetry={() => up.retry(it)}
+                onStatus={(ready, failed) => setStates((s) => (s[it.localId]?.ready === ready && s[it.localId]?.failed === failed ? s : { ...s, [it.localId]: { ready, failed } }))} />
+            ))}
+            {kind === "post" && up.items.length < 10 && (
+              <label className="grid aspect-square cursor-pointer place-items-center rounded-md border-2 border-dashed border-rule text-[28px] text-graphite hover:border-ink">
+                +<input type="file" multiple accept={ACCEPT.post} className="sr-only" onChange={(e) => { if (e.target.files) up.add(e.target.files); e.target.value = ""; }} />
+              </label>
+            )}
+          </div>
         )}
-        <div className="space-y-3 px-1 py-4">
-          <textarea value={caption} onChange={(e) => setCaption(e.target.value)} maxLength={2200} rows={3} placeholder="Write a caption…" aria-label="Caption" className="field resize-none" />
-          <ErrorText>{up.error ?? error}</ErrorText>
+        <div className="mt-4 space-y-3">
+          <textarea value={caption} onChange={(e) => setCaption(e.target.value)} maxLength={2200} rows={3} placeholder="Write a caption… use @ to mention and # for tags" aria-label="Caption" className="field resize-none" />
+          <ErrorText>{error}</ErrorText>
           <div className="flex items-center justify-between">
-            {preview ? <label className="btn-line cursor-pointer">Change<input type="file" accept={up.accept} className="sr-only" onChange={(e) => pick(e.target.files?.[0])} /></label> : <span />}
-            <button onClick={share} disabled={!media || sharing || up.busy} className="btn-ink">{sharing ? "Sharing…" : "Share"}</button>
+            <span className="text-[13px] text-graphite">{up.items.length > 0 && !allReady ? "You can share once processing finishes." : " "}</span>
+            <Button variant="stamp" onClick={share} disabled={!allReady} loading={sharing}>Share</Button>
           </div>
         </div>
       </div>
     </div>
   );
 }
+
+export default function NewPostPage() { return <Suspense><NewPost /></Suspense>; }

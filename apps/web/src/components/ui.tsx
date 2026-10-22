@@ -4,8 +4,9 @@ import clsx from "clsx";
 import type { User } from "@/lib/types";
 import { stampDate } from "@/lib/dates";
 
-export function Avatar({ user, size = 36, online }: { user: Pick<User, "username" | "avatarUrl">; size?: number; online?: boolean }) {
-  return (
+/** `ring`: "unseen" draws the orange story ring, "seen" a quiet grey one. */
+export function Avatar({ user, size = 36, online, ring }: { user: Pick<User, "username" | "avatarUrl">; size?: number; online?: boolean; ring?: "unseen" | "seen" }) {
+  const inner = (
     <span className="relative inline-block shrink-0" style={{ width: size, height: size }}>
       {user.avatarUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
@@ -15,7 +16,13 @@ export function Avatar({ user, size = 36, online }: { user: Pick<User, "username
           {user.username.slice(0, 1).toUpperCase()}
         </span>
       )}
-      {online && <span className="absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-paper bg-emerald-500" aria-label="Online" />}
+      {online && <span className="absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500" aria-label="Online" />}
+    </span>
+  );
+  if (!ring) return inner;
+  return (
+    <span className={clsx("inline-flex rounded-full p-[2.5px]", ring === "unseen" ? "bg-[conic-gradient(from_200deg,#f2691b,#ffb36b,#e0323b,#f2691b)]" : "bg-rule")}>
+      <span className="rounded-full bg-white p-[2px]">{inner}</span>
     </span>
   );
 }
@@ -47,7 +54,7 @@ export function Spinner({ className }: { className?: string }) {
 
 export function Empty({ title, children }: { title: string; children?: React.ReactNode }) {
   return (
-    <div className="rounded-2xl border border-dashed border-rule px-6 py-12 text-center">
+    <div data-surface className="rounded-2xl px-6 py-12 text-center">
       <p className="display text-lg">{title}</p>
       {children && <div className="mt-2 text-[15px] text-graphite">{children}</div>}
     </div>

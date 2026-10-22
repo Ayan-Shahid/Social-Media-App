@@ -1,32 +1,78 @@
 "use client";
-import { useRef, useState } from "react";
+// Uploads files and follows their processing. The API answers 202 right away; the worker sends
+// `media:status` over the WebSocket when done (with polling as a fallback).
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { api, ApiError, newIdempotencyKey } from "@/lib/api";
 import type { Media } from "@/lib/types";
 
-const ACCEPT_POST = "image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,video/mp4,video/quicktime,video/webm";
+export type Purpose = "post" | "avatar" | "story" | "short";
+export const ACCEPT: Record<Purpose, string> = {
+  post: "image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,video/mp4,video/quicktime,video/webm",
+  short: "video/mp4,video/quicktime,video/webm",
+  story: "image/jpeg,image/png,image/webp,image/heic,video/mp4,video/quicktime,video/webm",
+  avatar: "image/jpeg,image/png,image/webp,image/heic",
+};
 
-/** Uploads one file. The server checks the real file type and re-encodes it, so this is only a first filter. */
-export function useUpload(purpose: "post" | "avatar") {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const keyRef = useRef<{ file: File; key: string } | null>(null);
-  async function upload(file: File): Promise<Media | null> {
-    setError(null);
-    const isVideo = file.type.startsWith("video/");
-    const max = (isVideo ? 60 : 10) * 1024 * 1024;
-    if (file.size > max) { setError(`That file is too large. Max ${isVideo ? 60 : 10} MB.`); return null; }
-    // Same file retried = same key, so a flaky connection can't create two uploads.
-    if (keyRef.current?.file !== file) keyRef.current = { file, key: newIdempotencyKey() };
+export interface UploadItem { localId: string; file: File; preview: string; mediaId: string | null; error: string | null }
+
+/** Live status of one media item (socket push, poll fallback). */
+export function useMediaStatus(mediaId: string | null) {
+  return useQuery({
+    queryKey: ["media", mediaId],
+    queryFn: () => api<{ media: Media }>(`/api/media/${mediaId}`).then((r) => r.media),
+    enabled: !!mediaId,
+    refetchInterval: (q) => (q.state.data?.status === "processing" || !q.state.data ? 3000 : false),
+  });
+}
+
+export function useUploads(purpose: Purpose, max: number) {
+  const qc = useQueryClient();
+  const [items, setItems] = useState<UploadItem[]>([]);
+  const keys = useRef(new Map<string, string>()); // localId -> Idempotency-Key (reused on retry)
+  useEffect(() => () => items.forEach((i) => URL.revokeObjectURL(i.preview)), []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const send = useCallback(async (item: UploadItem) => {
+    const isVideo = item.file.type.startsWith("video/");
+    const maxMb = isVideo ? 60 : 10;
+    if (item.file.size > maxMb * 1024 * 1024) {
+      setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, error: `Too large. Max ${maxMb} MB.` } : x)));
+      return;
+    }
+    if (!keys.current.has(item.localId)) keys.current.set(item.localId, newIdempotencyKey());
     const form = new FormData();
-    form.append("file", file);
-    setBusy(true);
+    form.append("file", item.file);
     try {
-      const r = await api<{ media: Media }>(`/api/media?purpose=${purpose}`, { method: "POST", form, idempotencyKey: keyRef.current.key });
-      return r.media;
+      const r = await api<{ media: Media }>(`/api/media?purpose=${purpose}`, { method: "POST", form, idempotencyKey: keys.current.get(item.localId) });
+      qc.setQueryData(["media", r.media.id], r.media);
+      setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, mediaId: r.media.id, error: null } : x)));
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Upload failed. Check your connection and try again.");
-      return null;
-    } finally { setBusy(false); }
+      setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, error: e instanceof ApiError ? e.message : "Upload failed." } : x)));
+    }
+  }, [purpose, qc]);
+
+  const add = useCallback((files: FileList | File[]) => {
+    const list = Array.from(files).slice(0, Math.max(0, max - items.length)).map((file) => ({ localId: crypto.randomUUID(), file, preview: URL.createObjectURL(file), mediaId: null, error: null }));
+    setItems((l) => [...l, ...list]);
+    list.forEach(send);
+  }, [items.length, max, send]);
+
+  const remove = (localId: string) => setItems((l) => l.filter((x) => x.localId !== localId));
+  const retry = (item: UploadItem) => { setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, error: null } : x))); send(item); };
+  const reset = () => { items.forEach((i) => URL.revokeObjectURL(i.preview)); setItems([]); keys.current.clear(); };
+  return { items, add, remove, retry, reset };
+}
+
+/** Uploads one file and resolves once it's processed. For avatars and stories. */
+export async function uploadAndWait(file: File, purpose: Purpose): Promise<Media> {
+  const form = new FormData();
+  form.append("file", file);
+  const r = await api<{ media: Media }>(`/api/media?purpose=${purpose}`, { method: "POST", form, idempotencyKey: newIdempotencyKey() });
+  for (let i = 0; i < 120; i++) {
+    const m = await api<{ media: Media }>(`/api/media/${r.media.id}`).then((x) => x.media);
+    if (m.status === "ready") return m;
+    if (m.status === "failed") throw new ApiError(415, m.error ?? "Processing failed.");
+    await new Promise((res) => setTimeout(res, i < 10 ? 500 : 1500));
   }
-  return { upload, busy, error, accept: purpose === "avatar" ? "image/jpeg,image/png,image/webp,image/heic" : ACCEPT_POST };
+  throw new ApiError(504, "Processing is taking too long. Try again.");
 }

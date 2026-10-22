@@ -2,38 +2,48 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
+import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { Avatar, Spinner } from "@/components/ui";
-import { ChatIcon, HomeIcon, PlusIcon, SearchIcon } from "@/components/icons";
-
-const NAV = [
-  { href: "/", label: "Home", Icon: HomeIcon },
-  { href: "/explore", label: "Explore", Icon: SearchIcon },
-  { href: "/new", label: "New post", Icon: PlusIcon },
-  { href: "/messages", label: "Messages", Icon: ChatIcon },
-];
+import { BellIcon, BookmarkIcon, ChatIcon, GaugeIcon, HomeIcon, PlayIcon, PlusIcon, SearchIcon } from "@/components/icons";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { me, logout } = useSession();
+  const { me, logout, isAdmin } = useSession();
   const router = useRouter();
   const path = usePathname();
+  const unread = useQuery({ queryKey: ["unread"], queryFn: () => api<{ count: number }>("/api/notifications/unread-count").then((r) => r.count), enabled: !!me, refetchInterval: 120_000 });
   useEffect(() => { if (me === null) router.replace(`/login?next=${encodeURIComponent(path)}`); }, [me, router, path]);
   if (!me) return <div className="grid min-h-dvh place-items-center"><Spinner /></div>;
 
   const active = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
+  const badge = (unread.data ?? 0) > 0 ? <span className="absolute -top-1 -right-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-heart px-1 text-[11px] font-bold text-white">{unread.data! > 9 ? "9+" : unread.data}</span> : null;
+  const NAV = [
+    { href: "/", label: "Home", icon: <HomeIcon className="h-6 w-6" /> },
+    { href: "/explore", label: "Explore", icon: <SearchIcon className="h-6 w-6" /> },
+    { href: "/shorts", label: "Shorts", icon: <PlayIcon className="h-6 w-6" /> },
+    { href: "/new", label: "New post", icon: <PlusIcon className="h-6 w-6" /> },
+    { href: "/messages", label: "Messages", icon: <ChatIcon className="h-6 w-6" /> },
+    { href: "/notifications", label: "Notifications", icon: <span className="relative"><BellIcon className="h-6 w-6" />{badge}</span> },
+    { href: "/saved", label: "Saved", icon: <BookmarkIcon className="h-6 w-6" /> },
+    ...(isAdmin ? [{ href: "/ops", label: "Ops", icon: <GaugeIcon className="h-6 w-6" /> }] : []),
+  ];
+  const mobile = ["/", "/explore", "/shorts", "/new", "/notifications"];
+
   return (
-    <div className="mx-auto flex min-h-dvh max-w-[1180px]">
-      {/* Desktop rail */}
-      <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col border-r border-rule px-4 py-7 md:flex">
+    <div className="mx-auto flex min-h-dvh max-w-[1240px]">
+      <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col px-4 py-7 md:flex">
         <Link href="/" className="display mb-9 px-3 text-[26px]">Glimpse<span className="text-stamp">.</span></Link>
         <nav className="flex flex-col gap-1">
-          {NAV.map(({ href, label, Icon }) => (
-            <Link key={href} href={href} className={clsx("flex items-center gap-3.5 rounded-xl px-3 py-2.5 text-[15px] transition hover:bg-fog-deep", active(href) && "font-semibold bg-paper shadow-sm")}>
-              <Icon className="h-6 w-6" />{label}
+          {NAV.map(({ href, label, icon }) => (
+            <Link key={href} href={href} data-surface={active(href) ? "" : undefined}
+              className={clsx("flex items-center gap-3.5 rounded-xl px-3 py-2.5 text-[15px] transition hover:bg-white/50", active(href) && "font-semibold")}>
+              {icon}{label}
             </Link>
           ))}
-          <Link href={`/u/${me.username}`} className={clsx("flex items-center gap-3.5 rounded-xl px-3 py-2.5 text-[15px] transition hover:bg-fog-deep", path === `/u/${me.username}` && "font-semibold bg-paper shadow-sm")}>
+          <Link href={`/u/${me.username}`} data-surface={path === `/u/${me.username}` ? "" : undefined}
+            className={clsx("flex items-center gap-3.5 rounded-xl px-3 py-2.5 text-[15px] transition hover:bg-white/50", path === `/u/${me.username}` && "font-semibold")}>
             <Avatar user={me} size={24} />Profile
           </Link>
         </nav>
@@ -44,20 +54,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="min-w-0 flex-1">
-        {/* Mobile top bar */}
-        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-rule bg-fog/90 px-4 py-3 backdrop-blur md:hidden">
+        <header className="sticky top-0 z-20 flex items-center justify-between bg-fog/70 px-4 py-3 backdrop-blur md:hidden">
           <Link href="/" className="display text-[22px]">Glimpse<span className="text-stamp">.</span></Link>
-          <Link href="/settings" aria-label="Edit profile"><Avatar user={me} size={28} /></Link>
+          <div className="flex items-center gap-4">
+            <Link href="/messages" aria-label="Messages"><ChatIcon className="h-6 w-6" /></Link>
+            <Link href="/settings" aria-label="Edit profile"><Avatar user={me} size={28} /></Link>
+          </div>
         </header>
         <main className="px-4 pt-6 pb-28 md:px-10 md:pt-10 md:pb-16">{children}</main>
       </div>
 
-      {/* Mobile bottom bar */}
-      <nav className="fixed inset-x-0 bottom-0 z-20 flex justify-around border-t border-rule bg-paper/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
-        {[...NAV, { href: `/u/${me.username}`, label: "Profile", Icon: null }].map(({ href, label, Icon }) => (
-          <Link key={href} href={href} aria-label={label} className={clsx("grid h-14 flex-1 place-items-center", active(href) ? "text-ink" : "text-graphite")}>
-            {Icon ? <Icon className="h-6 w-6" /> : <Avatar user={me} size={24} />}
-          </Link>
+      <nav className="fixed inset-x-0 bottom-0 z-20 flex justify-around border-t border-rule bg-white/90 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+        {[...NAV.filter((n) => mobile.includes(n.href)), { href: `/u/${me.username}`, label: "Profile", icon: <Avatar user={me} size={24} /> }].map(({ href, label, icon }) => (
+          <Link key={href} href={href} aria-label={label} className={clsx("grid h-14 flex-1 place-items-center", active(href) ? "text-ink" : "text-graphite")}>{icon}</Link>
         ))}
       </nav>
     </div>
