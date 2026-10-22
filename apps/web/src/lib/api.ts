@@ -41,6 +41,8 @@ export async function api<T>(path: string, opts: Opts = {}): Promise<T> {
     }
   }
   const data = await res.json().catch(() => ({}));
+  // Session gone (expired, logged out in another tab or device): let the app sign out everywhere.
+  if (res.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event("glimpse:unauthorized"));
   if (!res.ok) throw new ApiError(res.status, data.error ?? "Something went wrong.", data.fields);
   return data as T;
 }

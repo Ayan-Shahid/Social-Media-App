@@ -76,10 +76,14 @@ storiesRouter.get("/:id/viewers", async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   const out = await asUser(me, async (tx) => {
+    // RLS already limits story_views to the author; this makes "not yours" a 404 instead of an empty list.
+    const own = await tx.execute(sql`select 1 from stories where id = ${id} and author_id = ${me}`);
+    if (!own.rowCount) return null;
     const r = await tx.execute<{ viewer_id: string }>(sql`select viewer_id from story_views where story_id = ${id} order by viewed_at desc limit 200`);
     const u = await getUsers(tx, r.rows.map((x) => x.viewer_id));
     return r.rows.map((x) => u.get(x.viewer_id)).filter(Boolean);
   });
+  if (!out) throw notFound();
   res.json({ viewers: out });
 });
 

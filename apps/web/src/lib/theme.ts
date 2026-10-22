@@ -21,6 +21,16 @@ export function isDark() {
   return t === "dark" || (t !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
 }
 
+/** Another tab changed the theme (localStorage fires "storage" in the OTHER tabs): apply it here too. */
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== KEY) return;
+    const t = getThemePref();
+    if (t === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+    window.dispatchEvent(new Event("glimpse:theme"));
+  });
+}
+
 export function useThemePref() {
   const [pref, setPref] = useState<ThemePref>("system");
   useEffect(() => {

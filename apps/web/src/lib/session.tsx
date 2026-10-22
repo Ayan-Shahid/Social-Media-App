@@ -23,6 +23,13 @@ interface SessionCtx {
 }
 
 const Ctx = createContext<SessionCtx | null>(null);
+
+// Tabs of the same browser share one session cookie (one session row on the server), but each tab
+// has its own JavaScript state. This channel keeps them in step: log out in one tab and the others
+// follow; unlock messages in one and the others pick up the key from IndexedDB.
+type TabMsg = { type: "logout" } | { type: "login" } | { type: "keys" } | { type: "me" };
+const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("glimpse") : null;
+export const tellOtherTabs = (m: TabMsg) => channel?.postMessage(m);
 export const useSession = () => {
   const c = useContext(Ctx);
   if (!c) throw new Error("SessionProvider missing");
@@ -53,15 +60,32 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await savePrivateKey(userId, key);
     setPrivateKey(key);
     setMyPublicKey(await publicKeyFromPrivate(key));
+    tellOtherTabs({ type: "keys" });
   }, []);
 
   const refreshMe = useCallback(() => qc.invalidateQueries({ queryKey: ["me"] }), [qc]);
+
+  // Messages from other tabs, and "the server says this session is gone" (expired, or logged out on
+  // another device's "log out everywhere"): drop local state, and the app layout redirects to login.
+  useEffect(() => {
+    const signedOut = () => { setPrivateKey(null); setMyPublicKey(null); qc.clear(); qc.setQueryData(["me"], null); };
+    const onMsg = (e: MessageEvent<TabMsg>) => {
+      if (e.data.type === "logout") signedOut();
+      if (e.data.type === "login") { qc.clear(); refreshMe(); }
+      if (e.data.type === "me") refreshMe();
+      if (e.data.type === "keys" && me) loadPrivateKey(me.id).then(async (k) => { setPrivateKey(k ?? null); setMyPublicKey(k ? await publicKeyFromPrivate(k) : null); }).catch(() => {});
+    };
+    channel?.addEventListener("message", onMsg);
+    window.addEventListener("glimpse:unauthorized", signedOut);
+    return () => { channel?.removeEventListener("message", onMsg); window.removeEventListener("glimpse:unauthorized", signedOut); };
+  }, [qc, refreshMe, me]);
 
   const login = useCallback(async (email: string, password: string) => {
     const r = await api<{ user: User; keyBackup: KeyBackup | null }>("/api/auth/login", { method: "POST", body: { email, password } });
     if (r.keyBackup?.kind !== "passcode" && r.keyBackup) await adoptKey(r.user.id, await unlockBackup(r.keyBackup, password)).catch(() => {});
     qc.clear();
     await refreshMe();
+    tellOtherTabs({ type: "login" });
   }, [qc, adoptKey, refreshMe]);
 
   const register = useCallback(async (username: string, email: string, password: string) => {
@@ -70,6 +94,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await adoptKey(r.user.id, keys.privateKey);
     qc.clear();
     await refreshMe();
+    tellOtherTabs({ type: "login" });
   }, [qc, adoptKey, refreshMe]);
 
   const logout = useCallback(async () => {
@@ -78,6 +103,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setPrivateKey(null);
     qc.clear();
     qc.setQueryData(["me"], null);
+    tellOtherTabs({ type: "logout" });
   }, [qc]);
 
   const unlock = useCallback(async (secret: string) => {

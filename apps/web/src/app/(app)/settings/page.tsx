@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { tellOtherTabs, useSession } from "@/lib/session";
 import type { User } from "@/lib/types";
 import { ACCEPT, uploadAndWait } from "@/components/Uploader";
 import { Button } from "@/components/Button";
@@ -27,6 +27,7 @@ export default function SettingsPage() {
     try {
       const r = await api<{ user: User }>("/api/users/me", { method: "PATCH", body: patch });
       qc.invalidateQueries({ queryKey: ["me"] });
+      tellOtherTabs({ type: "me" });
       qc.invalidateQueries({ queryKey: ["profile", r.user.username] });
       setStatus({ ok });
       return true;
