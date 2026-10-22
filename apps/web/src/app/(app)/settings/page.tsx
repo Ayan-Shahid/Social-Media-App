@@ -19,6 +19,7 @@ export default function SettingsPage() {
   const [status, setStatus] = useState<{ ok?: string; error?: string }>({});
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(!!me?.isPrivate);
   if (!me) return null;
 
   async function save(patch: Record<string, unknown>, ok: string) {
@@ -28,7 +29,8 @@ export default function SettingsPage() {
       qc.invalidateQueries({ queryKey: ["me"] });
       qc.invalidateQueries({ queryKey: ["profile", r.user.username] });
       setStatus({ ok });
-    } catch (e) { setStatus({ error: e instanceof ApiError ? e.message : "Couldn't save." }); }
+      return true;
+    } catch (e) { setStatus({ error: e instanceof ApiError ? e.message : "Couldn't save." }); return false; }
     finally { setBusy(false); }
   }
 
@@ -71,11 +73,12 @@ export default function SettingsPage() {
       <div data-surface className="space-y-5 rounded-2xl p-6">
         <Switch
           label="Private account"
-          checked={!!me.isPrivate}
+          checked={isPrivate}
           disabled={busy}
-          onChange={(v) => {
+          onChange={async (v) => {
             if (!v && !confirm("Make your account public? Anyone will be able to see your posts, and pending follow requests will be accepted.")) return;
-            save({ isPrivate: v }, v ? "Your account is private." : "Your account is public.");
+            setIsPrivate(v); // move the switch now; put it back if saving fails
+            if (!(await save({ isPrivate: v }, v ? "Your account is private." : "Your account is public."))) setIsPrivate(!v);
           }}
           hint="Only people you approve can see your photos, videos and stories. Your profile name, picture and counts stay visible."
         />

@@ -1,6 +1,6 @@
 # Glimpse
 
-A photo and video sharing app: feed, stories, shorts, reposts, saved collections, mentions and hashtags, notifications, and end-to-end encrypted direct and group messages.
+A photo and video sharing app: feed, stories, shorts, live video, reposts, saved collections, mentions and hashtags, notifications, private accounts, and end-to-end encrypted direct and group messages. Light and dark themes over a WebGL background that reacts to what you do.
 
 Originally built in 2022 with the MERN stack (kept in [`legacy/2022`](legacy/2022) for comparison), then rebuilt in 2026 in two steps:
 - **v1:** Postgres with row-level security and a security-first API ([docs/CHANGES.md](docs/CHANGES.md)).
@@ -12,12 +12,15 @@ The v2 decisions and their trade-offs are in [docs/v2/DECISIONS.md](docs/v2/DECI
 
 - **Posts:** photo carousels (up to 10), captions with @mentions and #hashtags, likes, comments, reposts, saves into collections
 - **Shorts:** vertical videos, transcoded to adaptive HLS (360p/720p)
-- **Stories:** expire after 24 hours, with seen rings and a viewer list for the author
+- **Stories:** expire after 24 hours, with seen rings and a viewer list for the author; reply or react (❤️ 😂 😮 😢 👏 🔥) into an encrypted DM
+- **Live video:** go live from the browser camera; followers get notified and a live ring in their tray; live comments, hearts and viewer count
 - **Feeds:** home feed of people you follow (and their reposts), explore, a page per hashtag, trending tags
 - **Notifications:** grouped ("bea and 3 others liked your post"), delivered live
-- **Messages:** end-to-end encrypted 1:1 and group chats (up to 32), with live delivery, online status and safety codes
+- **Messages:** end-to-end encrypted 1:1 and group chats (up to 32), with live delivery, online status and safety codes; share posts into chats
+- **Privacy:** private accounts with follow requests, remove a follower, block, mute
 - **Accounts:** email and password, or Continue with Google
 - **Ops page:** live cache hit rates, queue depths, and which API instance answered (admins only)
+- **Look:** light and dark themes (follows the system, or pick one), a WebGL background of drifting social icons that ripples when you like a post or get a message, grainy mesh-gradient buttons
 
 ## Stack
 
@@ -27,20 +30,20 @@ The v2 decisions and their trade-offs are in [docs/v2/DECISIONS.md](docs/v2/DECI
 | API | Node.js 24, Express 5, TypeScript, Socket.IO, Zod |
 | Database | PostgreSQL 18, Drizzle ORM and migrations, row-level security |
 | Cache, queues | Redis 8 ×2 (cache: LRU, no persistence; queues: AOF, no eviction), BullMQ, Redis Streams |
-| Media | sharp (images → WebP), ffmpeg (video → HLS), file-type (magic-byte detection) |
+| Media | sharp (images → WebP), ffmpeg (video → HLS, live → HLS), file-type (magic-byte detection) |
+| Object storage | SeaweedFS (S3 API) with signed direct uploads; works with R2 or S3 too |
+| Live video | MediaRecorder → WebSocket → ffmpeg → HLS, hls.js |
 | Encryption | libsodium (X25519, XSalsa20-Poly1305, Argon2id) |
 | Deploy | Docker Compose, Caddy (load balancer), Cloudflare Tunnel |
 
 ```
-                                            ┌─▶ web (Next.js)
-browser ─▶ Cloudflare Tunnel ─▶ Caddy ──────┤
-                                            └─▶ api-1, api-2 (round-robin, health-checked)
-                                                   │  ▲ cache / rate limits / presence ── redis-cache
-                                                   │  │ live events (Streams) ─────────── redis-queue
-                                                   ▼  │
-                                                Postgres ── outbox ─▶ relay ─▶ BullMQ ─▶ worker
-                                                                               (media, fan-out,
-                                                                                notifications, cleanup)
+                                     ┌─▶ web (Next.js)
+browser ─▶ Cloudflare Tunnel ─▶ Caddy ┼─▶ api-1, api-2 (round-robin, health-checked) ──▶ Postgres (RLS)
+                                     ├─▶ live (camera WebSocket in, HLS out)              │ outbox
+                                     └─▶ storage (GET /media/*, signed PUT /uploads/*)    ▼
+                                              ▲                     relay ─▶ BullMQ (redis-queue) ─▶ worker
+                                              └──────────────── worker writes processed media ◀──┘
+   redis-cache: cache, rate limits, presence    ·    redis-queue: jobs + realtime event stream
 ```
 
 How a post travels: the API writes the post **and** an outbox event in one transaction, and returns. The relay moves the event to a queue. The worker pushes the post id into each follower's feed in Redis (or skips accounts with huge followings, which are merged in at read time). Then it sends notifications, which reach the browser over the websocket of whichever API instance the recipient is connected to.
@@ -50,13 +53,13 @@ How a post travels: the API writes the post **and** an outbox event in one trans
 Only Docker Desktop is needed on the host. No Node, Postgres or ffmpeg to install.
 
 ```bash
-cp .env.example .env          # set the three passwords (letters and numbers only)
+cp .env.example .env          # set the four secrets (letters and numbers only)
 docker compose up -d --build  # first build takes a few minutes
 ```
 
 Open http://localhost:8090. The `migrate` service applies the database schema automatically and exits.
 
-The whole stack is limited to about 2.6 GB of memory (see `deploy.resources` in `docker-compose.yml`), so it can run next to other apps.
+The whole stack is limited to about 3.8 GB of memory (see `deploy.resources` in `docker-compose.yml`), so it can run next to other apps.
 
 **Optional settings in `.env`:**
 - `ADMIN_USERNAMES=yourname`: shows the **Ops** page and the queue dashboard (`/admin/queues`) to that account.
@@ -87,24 +90,35 @@ docker compose up -d --build          # update after pulling new code (runs new 
 
 ## Develop without Docker
 
-Needs Node 22+, Postgres 16+, Redis (two instances on 6380 and 6381) and ffmpeg.
+Needs Node 22+, Postgres 16+, Redis (two instances on 6380 and 6381), ffmpeg, and any S3 API on 8333 (SeaweedFS, or `moto_server` for a quick in-memory one).
 
 ```bash
 # API
 cd apps/api && npm install
 MIGRATION_DATABASE_URL=postgres://postgres@localhost/glimpse APP_DB_PASSWORD=devpass WORKER_DB_PASSWORD=workerpass npm run migrate:dev
 DATABASE_URL=postgres://glimpse_app:devpass@localhost/glimpse APP_ORIGIN=http://localhost:3000 npm run dev
-# Worker (another terminal)
+# Worker and live service (other terminals)
 WORKER_DATABASE_URL=postgres://glimpse_worker:workerpass@localhost/glimpse DATABASE_URL=... npx tsx src/worker.ts
+DATABASE_URL=... npx tsx src/live.ts
 
 # Web (another terminal)
 cd apps/web && npm install && npm run dev     # http://localhost:3000
 ```
 
-Tests (API, against real Postgres and Redis): `cd apps/api && npm test`. The 63 tests cover:
+Tests (API, against real Postgres, Redis and an S3 API, e.g. `moto_server -p 4566`): `cd apps/api && npm test`. The 84 tests cover:
 - **Security:** CSRF, idempotency, upload attacks, row-level security, encrypted messaging.
 - **System behaviour:** outbox reliability, idempotent consumers, fan-out push and pull, cache stampedes, counter drift, and cross-instance delivery with two real API processes.
 - **Features**, and **Google sign-in** against a mock identity provider.
+- **Privacy:** private accounts, requests, blocks, mutes, and that the shared caches never leak across viewers.
+- **Live video:** a real stream through the live service and ffmpeg, access control, and the comment room.
+
+### What hasn't been run yet
+
+The build machine couldn't reach Docker Hub or GitHub releases, so these were checked by other means. They need a first real run on the Mac:
+- **`docker compose up` itself.** Each service ran as a plain process behind the same Caddy config.
+- **SeaweedFS.** Storage was tested against `moto`, an S3 emulator. The SeaweedFS identity config (`deploy/seaweedfs.sh`) is written from its docs, but hasn't been exercised.
+- **Playback of H.264 video in Chrome and Safari.** The test browser has no H.264 decoder, so HLS output was verified with ffprobe instead.
+- **Live from Safari.** Its MediaRecorder sends MP4 rather than WebM; ffmpeg reads both, but it's untested.
 
 ## Database changes
 

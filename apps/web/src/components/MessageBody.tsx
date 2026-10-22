@@ -59,7 +59,7 @@ function SharedPost({ id }: { id: string }) {
   const m = p.media[0];
   const thumb = m ? (m.kind === "video" ? m.posterUrl : m.srcset[0]?.url ?? m.url) : null;
   return (
-    <Link href={`/p/${p.id}`} data-surface className="rise block w-56 overflow-hidden rounded-xl ring-1 ring-rule transition hover:-translate-y-0.5">
+    <Link href={`/p/${p.id}`} className="rise block w-56 overflow-hidden rounded-xl bg-paper ring-1 ring-rule transition hover:-translate-y-0.5">
       <span className="flex items-center gap-2 px-3 py-2"><Avatar user={p.author} size={24} /><span className="truncate text-[13px] font-semibold">{p.author.username}</span></span>
       <span className="relative block aspect-square bg-fog-deep">
         {/* eslint-disable-next-line @next/next/no-img-element */}

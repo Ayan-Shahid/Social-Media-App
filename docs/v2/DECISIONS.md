@@ -97,11 +97,11 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 
 ## D8. Media pipeline ✅
 
-- **Uploads:** the API validates magic bytes, stores the original privately, and returns `202` with `status: processing`. A worker does the rest. The client gets `media:status` over the socket.
+- **Uploads:** since D14, the browser uploads straight to private object storage with a signed URL. On "complete", the API checks the size and magic bytes and returns `202` with `status: processing`. A worker does the rest. The client gets `media:status` over the socket.
 - **Images:** WebP at 480 px and 1080 px wide (`srcset`). No metadata kept.
 - **Videos (posts and shorts):** HLS with two renditions, 360p and 720p, plus a poster image. A 2018 MacBook can't transcode 1080p fast enough to be worth it.
 - **Concurrency:** 1 video job and 3 image jobs per worker. Scale by adding workers, not concurrency.
-- **Originals:** deleted after successful processing.
+- **Originals:** deleted from the private bucket after successful processing (they may carry GPS/EXIF data).
 
 ## D9. Counters: write-through to a Redis hash ✅
 
@@ -109,12 +109,18 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 
 **Why:** reads become one Redis call, and there's no hot-row lock on viral posts. **Drift repair:** if an increment is lost, the 1-hour expiry forces a recount from Postgres.
 
-## D10. Shaders: one canvas for background and cards ✅
+## D10. Shaders: one canvas for background and cards, reacting to the app ✅
 
-**Decision:** one fixed, fullscreen WebGL canvas behind the app. Each frame it receives the screen rectangles of up to 16 visible cards as uniforms. The fragment shader draws the background field everywhere and a quieter "paper" material inside the card rectangles. The cards themselves are transparent.
-- **Why:** one WebGL context, no matter how long the feed is, instead of hitting the browser's limit of about 16.
-- **Performance:** device pixel ratio capped at 1.5, paused when the tab is hidden.
-- **Fallbacks:** with `prefers-reduced-motion`, or if WebGL fails, a static WebP takes its place.
+**Decision:** one fixed, fullscreen WebGL canvas behind the app draws everything that isn't content:
+- **Background:** two soft glows, plus three parallax layers of line-drawn social icons (hearts, chat bubbles, @, #, cameras, play buttons), drawn with signed-distance functions. Far layers are small and blurred; near ones are larger and sharper. Everything drifts slowly upward. Each pixel only evaluates the icon in its own grid cell, so the cost is three small SDFs per layer, not one per icon.
+- **Reacting:** `pulse(kind, x, y)` from anywhere in the app. A like sends a ripple and a burst of hearts from the button (drawn over the card's paper, under the DOM content). A new message sends chat bubbles up from the Messages link, and a follower going live does both. Icons light up as the ripple passes. Up to 8 pulses at once, as a uniform array.
+- **Cards:** each frame it receives the screen rectangles of up to 16 visible `data-surface` elements as uniforms, and draws paper with a soft contact shadow inside them.
+- **Theme:** light and dark palettes in the same shader. `u_dark` cross-fades in ~0.4 s, time-based, so it looks the same at 20 fps or 120.
+- **Why one canvas:** one WebGL context however long the feed is, instead of hitting the browser's limit of about 16.
+- **Performance:** device pixel ratio capped at 1.5, paused when the tab is hidden, 3-octave noise.
+- **Fallbacks:** with `prefers-reduced-motion`, time freezes and bursts are off. If WebGL fails, a static WebP (light or dark) is used and cards are plain CSS.
+
+**Dark mode** follows the system by default; Settings or the sidebar can pin Light or Dark for this device. It's applied by an inline script before first paint (with the CSP nonce), so there's no flash. Colours are CSS tokens that flip under `[data-theme=dark]` or `prefers-color-scheme`, and components use tokens rather than literal colours. Buttons get dark mesh textures too: the primary button inverts to frosted light, and the secondary turns charcoal.
 
 ## D11. Real-time across instances ✅
 
@@ -150,3 +156,36 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 - **Cleanup.** Uploads never completed are deleted after an hour, and unused media after a day (maintenance job).
 
 **Trade-off:** public media URLs are unguessable but not signed per viewer. A follower of a private account who copies an image URL can share it, as with most CDNs. Per-viewer signed GET URLs would close that, at the cost of HTTP caching and cache entries that expire.
+
+## D15. Privacy: private accounts, follow requests, block, mute (added) ✅
+
+**Decision:** visibility is one Postgres function, `app.can_see(author)`. It means: it's me; or there's no block either way, and the account is public or I follow it. The `posts`, `stories`, `comments` and `live_streams` read policies all use it. Likes, comments, reposts and saves have insert checks of the form `exists (select 1 from posts where id = post_id)`. RLS applies inside that subquery too, so "you can only like what you can see" comes free from the posts policy.
+
+- **Follow requests:** the follows insert policy only allows direct follows of public, unblocked accounts. Private ones go through `follow_requests`. Accepting inserts a follow row whose follower is *someone else*, which no policy should allow, so it's a narrow `SECURITY DEFINER` function: `app.accept_follow_request(requester)` only works for a pending request to the caller. Going public accepts every pending request in the same transaction.
+- **Blocks:** `app.block_user()` records the block and cuts follows and requests in both directions, atomically. Only the blocker can read their blocks. The other side sees "user not found" and content disappearing; `app.blocked_with(other)` answers only about the caller, so nobody can probe who blocked whom. A block also stops new messages in a 1:1 chat (`messages` insert policy), and hides past and future notifications across it.
+- **Mutes** are a preference, not a permission. They filter the feed (kept in the timeline, hidden at read time, so unmuting brings items back), the stories tray, the live list and live notifications. A muted account's posts are still reachable directly.
+- **Discovery** (explore, shorts, hashtags) shows public accounts only, like Instagram. Profile counts stay public.
+
+**The hard part: caching vs. per-viewer visibility.** Post content is cached once in Redis and shared by every viewer (D4), and a cache hit skips RLS. Tests caught three leaks, all fixed:
+1. **Content:** hydration always runs one per-viewer query, which was already there for "liked by me". That query now reads `posts` under the viewer's RLS, and a post with no row is dropped, even if its content came from the cache. The cache stores content; it never decides visibility.
+2. **Negative caching:** a stranger's miss on a private post would have cached "not found" for everyone, hiding it from followers for 30 s. Post caches don't cache misses (`negative: false`), because under RLS "no row" can mean "not for you".
+3. **Counters:** profile counts were computed under the first viewer's RLS and then shared, so a stranger would cache "0 posts". They're now counted over all rows by a definer function, since they're public facts.
+
+`privacy.test.ts` covers each of these, including both cache orders.
+
+## D16. Live video: WebSocket ingest -> ffmpeg -> HLS, in its own service (added) ✅
+
+**Decision:** the browser records the camera with `MediaRecorder` (0.5 s chunks: WebM in Chrome and Firefox, MP4 in Safari) and sends them over a WebSocket to a separate `live` service. There, ffmpeg re-encodes to H.264/AAC (short side ≤ 720p, keyframe every 2 s) and writes a rolling 6-segment HLS playlist. Viewers play it with hls.js (natively in Safari). Comments, hearts and viewer counts go over the existing realtime bus (D11) into a Socket.IO room per stream, so they work across both API instances.
+
+- **Why not WebRTC (WHIP/WHEP with an SFU such as MediaMTX or LiveKit):** it would cut latency from ~4–6 s to under 1 s. But it adds a media server, UDP ports and TURN for viewers behind strict NATs, none of which pass through a Cloudflare Tunnel. HLS reuses parts the app already has (ffmpeg, hls.js, HTTP), works through the tunnel, and could be cached by a CDN. It's the upgrade path if latency ever matters more.
+- **Stateful by nature:** a stream lives in the process ingesting it, so `live` is its own service, not load-balanced. To scale it, assign streams to live servers (e.g. by hashing the stream id) and upload segments to object storage or a CDN instead of serving them from local disk.
+- **Access:** the ingest WebSocket checks Origin, the session, that the caller is the host, and that only one ingest runs per stream. Every playlist and segment request is checked against RLS (`live_streams_select` uses `app.can_see`), cached for 20 s per viewer and stream. A private account's live is visible only to approved followers. A stranger gets 404, not 403, so they can't tell it exists.
+- **Lifecycle:** the database row goes `starting -> live` (when the first segment exists; that's when the outbox emits `live.started`, and followers are notified) and then `ended`. A user can have only one unfinished stream (partial unique index). Ending writes `#EXT-X-ENDLIST`, and viewers are told over the bus. Segments are deleted 2 minutes later; there is no replay.
+- **Crash recovery:** while ingesting, the service refreshes `live:<id>:alive` (15 s TTL). A maintenance job ends any `live` stream whose key has expired, for example after the container restarts.
+- **Backpressure:** if ffmpeg falls behind by more than 16 MB (CPU-starved), the stream is stopped with a message instead of buffering until the process runs out of memory. Streams are capped at `MAX_LIVE_MINUTES`.
+
+**Tested:** `live.test.ts` pushes a real WebM through the real service and checks the HLS output with ffprobe (H.264 + AAC), access for follower, stranger and anonymous viewers, path traversal, the room for comments and hearts, ending, and crash reaping. The browser test goes live from Chromium's fake camera through Caddy.
+
+## D17. Message envelopes: what's inside the encryption (added) ✅
+
+Every encrypted message's plaintext is a small JSON envelope: text, a shared post (`postId` and an optional note), a story reply (story id, thumbnail URL, text) or a story reaction (emoji). The server can't tell them apart from ordinary text, so it never learns which post was shared or which story was answered. When the recipient opens a shared post, the API checks *their* access, so a private post shared with a non-follower shows "unavailable". Messages from before envelopes existed decode as plain text. Sharing to several chats sends one ciphertext per conversation, each with its own idempotency key, so retrying after a partial failure never duplicates.

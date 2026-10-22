@@ -2,7 +2,7 @@
 // "Send to…": share a post into one or more chats. Each recipient gets its own encrypted message
 // (one per conversation), so the server sees N ciphertexts and nothing about the post.
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { newIdempotencyKey } from "@/lib/api";
@@ -23,6 +23,10 @@ export function ShareSheet({ post, onClose }: { post: Post; onClose: () => void 
   const [note, setNote] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "sent">("idle");
   const [error, setError] = useState<string | null>(null);
+  // One idempotency key per recipient for the life of this sheet: retrying after a partial failure
+  // re-sends only what didn't arrive, and never duplicates what did.
+  const keys = useRef(new Map<string, string>());
+  const keyFor = (k: string) => { if (!keys.current.has(k)) keys.current.set(k, newIdempotencyKey()); return keys.current.get(k)!; };
   const toggle = (t: Target) => setPicked((p) => (p.some((x) => x.key === t.key) ? p.filter((x) => x.key !== t.key) : [...p, t]));
   const isPicked = (k: string) => picked.some((x) => x.key === k);
 
@@ -30,11 +34,10 @@ export function ShareSheet({ post, onClose }: { post: Post; onClose: () => void 
     if (!privateKey) return;
     setState("sending"); setError(null);
     const failed: string[] = [];
-    // One idempotency key per recipient: a retry after a partial failure re-sends only what's missing.
     await Promise.all(picked.map(async (t) => {
       try {
         const conv = t.conv ?? await openDirect(t.user!.id);
-        await sendEnvelope(qc, conv, { t: "post", postId: post.id, ...(note.trim() && { text: note.trim().slice(0, 1000) }) }, privateKey, `${t.key}-${post.id}-${note.length}`);
+        await sendEnvelope(qc, conv, { t: "post", postId: post.id, ...(note.trim() && { text: note.trim().slice(0, 1000) }) }, privateKey, keyFor(t.key));
       } catch { failed.push(t.conv ? convName(t.conv) : t.user!.username); }
     }));
     if (failed.length) { setError(`Couldn't send to ${failed.join(", ")}.`); setState("idle"); }
