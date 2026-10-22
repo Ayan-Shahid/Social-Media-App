@@ -31,28 +31,25 @@ function mesh(W, H, points, grain, falloff = 2.2) {
   return sharp(px, { raw: { width: W, height: H, channels: 3 } });
 }
 
-const W = 720, H = 240; // 2x the widest button
+// 1200x300, shown at 600x150 CSS px: 2x for retina, so the grain stays one physical pixel and crisp.
+// Buttons show a window into it; hover slides the window, so the colours visibly drift.
+const W = 1200, H = 300;
 const buttons = {
-  // Dark ink with an orange safelight glow in one corner: primary actions.
-  ink: [["#15171c", 0.15, 0.3], ["#262b36", 0.55, 0.8], ["#5a2a12", 0.95, 0.15], ["#1a1d24", 0.75, 0.5], ["#2d2236", 0.3, 0.95]],
-  // Date-stamp orange: the one loud button (Share / Post).
-  stamp: [["#f2691b", 0.2, 0.4], ["#ffa25c", 0.85, 0.15], ["#c9420f", 0.6, 0.9], ["#ff7d2e", 0.4, 0.05], ["#e85a14", 0.95, 0.85]],
-  // Paper: secondary actions.
-  paper: [["#f6f3ee", 0.2, 0.3], ["#ffffff", 0.6, 0.1], ["#f3e2d6", 0.95, 0.8], ["#e6ebf2", 0.05, 0.9], ["#faf6f0", 0.5, 0.6]],
-  // Dark theme: the primary button inverts to frosted light; secondary becomes charcoal.
-  "ink-dark": [["#eef0f4", 0.15, 0.3], ["#ffffff", 0.55, 0.8], ["#ffd9bf", 0.95, 0.15], ["#e3e7ef", 0.75, 0.5], ["#efe6f6", 0.3, 0.95]],
-  "paper-dark": [["#1d2027", 0.2, 0.3], ["#262a33", 0.6, 0.1], ["#2e2228", 0.95, 0.8], ["#1a1f2a", 0.05, 0.9], ["#22252d", 0.5, 0.6]],
+  // Ink: deep navy into plum, with a burnt-orange safelight glow. Primary actions.
+  ink: [["#0f1424", 0.05, 0.2], ["#2a1f4a", 0.35, 0.9], ["#7a2e14", 0.62, 0.1], ["#141a2e", 0.8, 0.7], ["#3d1838", 0.98, 0.25], ["#1b2440", 0.25, 0.35]],
+  // Date-stamp orange into hot pink and amber: the one loud button (Share / Go live).
+  stamp: [["#ff5a1f", 0.08, 0.5], ["#ffb347", 0.35, 0.05], ["#e8336e", 0.55, 0.95], ["#ff7a2e", 0.75, 0.3], ["#ffcf6b", 0.95, 0.85], ["#f04b2a", 0.25, 0.8]],
+  // Paper: warm white into a hint of peach and sky. Secondary actions.
+  paper: [["#fdf6ee", 0.08, 0.3], ["#ffffff", 0.32, 0.05], ["#ffd7bb", 0.58, 0.95], ["#cfe0fa", 0.82, 0.15], ["#f1dcf3", 0.3, 0.92], ["#fff1e2", 0.98, 0.7]],
+  // Dark theme: primary inverts to frosted light with a peach glow; secondary is charcoal with a plum tint.
+  "ink-dark": [["#f1f3f7", 0.1, 0.3], ["#ffffff", 0.45, 0.85], ["#ffd0ad", 0.7, 0.1], ["#dfe6f3", 0.9, 0.7], ["#f1e2f6", 0.3, 0.95]],
+  "paper-dark": [["#1a1d25", 0.08, 0.3], ["#302742", 0.4, 0.05], ["#3d2430", 0.62, 0.95], ["#172338", 0.85, 0.2], ["#25282f", 0.3, 0.9]],
 };
 
 mkdirSync("public/textures", { recursive: true });
 for (const [name, pts] of Object.entries(buttons)) {
-  const img = mesh(W, H, pts, name.startsWith("paper") || name === "ink-dark" ? 16 : 22);
-  const info = await img.webp({ quality: 88 }).toFile(`public/textures/btn-${name}.webp`);
+  const img = mesh(W, H, pts, name.startsWith("paper") || name === "ink-dark" ? 20 : 24, 2.0);
+  const info = await img.webp({ quality: 84 }).toFile(`public/textures/btn-${name}.webp`);
   console.log(`btn-${name}.webp`, info.size, "bytes");
 }
-const bg = await mesh(1200, 800, [["#e8ebf0", 0.2, 0.2], ["#f4dccb", 0.9, 0.1], ["#d6deea", 0.1, 0.9], ["#eceef1", 0.55, 0.5], ["#efe4f0", 0.85, 0.85]], 10)
-  .webp({ quality: 80 }).toFile("public/textures/bg-static.webp");
-console.log("bg-static.webp", bg.size, "bytes");
-const bgDark = await mesh(1200, 800, [["#101218", 0.2, 0.2], ["#2a1a22", 0.9, 0.1], ["#141b2a", 0.1, 0.9], ["#0f1115", 0.55, 0.5], ["#1d1528", 0.85, 0.85]], 9)
-  .webp({ quality: 80 }).toFile("public/textures/bg-static-dark.webp");
-console.log("bg-static-dark.webp", bgDark.size, "bytes");
+// The page background is rendered from the shader instead: scripts/render-backdrop.mjs

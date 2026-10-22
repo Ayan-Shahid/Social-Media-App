@@ -2,7 +2,7 @@
 // Live updates over one WebSocket: messages, notifications, upload progress, presence, group changes.
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import { pulse } from "@/components/ShaderBackdrop";
+import { pulse } from "@/components/Backdrop";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSession } from "./session";
 import type { EncryptedMessage, Media } from "./types";

@@ -119,4 +119,14 @@ describe("mallory swaps in other people's ids", () => {
       expect(all, `found "${secret}" in Redis`).not.toContain(secret);
     }
   });
+
+  it("anonymous visitors get only aggregate numbers (landing page), nothing about anyone", async () => {
+    const request = (await import("supertest")).default;
+    const r = await request(app).get("/api/public/stats");
+    expect(r.status).toBe(200);
+    expect(Object.keys(r.body).sort()).toEqual(["at", "liveNow", "people", "posts", "shorts", "storiesToday"]);
+    expect(r.body.people).toBe(3);
+    for (const v of [r.body.people, r.body.posts, r.body.shorts, r.body.storiesToday, r.body.liveNow]) expect(typeof v).toBe("number");
+    expect((await request(app).get("/api/posts/explore")).status).toBe(401); // everything else still needs a login
+  });
 });

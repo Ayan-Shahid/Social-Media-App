@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 import { Providers } from "./providers";
-import { ShaderBackdrop } from "@/components/ShaderBackdrop";
+import { Backdrop } from "@/components/Backdrop";
 
 export const metadata: Metadata = { title: { default: "Glimpse", template: "%s · Glimpse" }, description: "Share photos, shorts and stories with friends." };
 export const viewport: Viewport = {
@@ -20,7 +20,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en" suppressHydrationWarning>
       <head><script nonce={nonce} dangerouslySetInnerHTML={{ __html: THEME }} /></head>
       <body>
-        <ShaderBackdrop />
+        <Backdrop />
         <Providers>{children}</Providers>
       </body>
     </html>

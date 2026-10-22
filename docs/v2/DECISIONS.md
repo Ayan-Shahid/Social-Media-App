@@ -109,18 +109,18 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 
 **Why:** reads become one Redis call, and there's no hot-row lock on viral posts. **Drift repair:** if an increment is lost, the 1-hour expiry forces a recount from Postgres.
 
-## D10. Shaders: one canvas for background and cards, reacting to the app ✅
+## D10. Background: a pre-rendered shader, grid-matrix cards, and a 3D camera ✅
 
-**Decision:** one fixed, fullscreen WebGL canvas behind the app draws everything that isn't content:
-- **Background:** two soft glows, plus three parallax layers of line-drawn social icons (hearts, chat bubbles, @, #, cameras, play buttons), drawn with signed-distance functions. Far layers are small and blurred; near ones are larger and sharper. Everything drifts slowly upward. Each pixel only evaluates the icon in its own grid cell, so the cost is three small SDFs per layer, not one per icon.
-- **Reacting:** `pulse(kind, x, y)` from anywhere in the app. A like sends a ripple and a burst of hearts from the button (drawn over the card's paper, under the DOM content). A new message sends chat bubbles up from the Messages link, and a follower going live does both. Icons light up as the ripple passes. Up to 8 pulses at once, as a uniform array.
-- **Cards:** each frame it receives the screen rectangles of up to 16 visible `data-surface` elements as uniforms, and draws paper with a soft contact shadow inside them.
-- **Theme:** light and dark palettes in the same shader. `u_dark` cross-fades in ~0.4 s, time-based, so it looks the same at 20 fps or 120.
-- **Why one canvas:** one WebGL context however long the feed is, instead of hitting the browser's limit of about 16.
-- **Performance:** device pixel ratio capped at 1.5, paused when the tab is hidden, 3-octave noise.
-- **Fallbacks:** with `prefers-reduced-motion`, time freezes and bursts are off. If WebGL fails, a static WebP (light or dark) is used and cards are plain CSS.
+**Changed after review.** The first version ran one live WebGL canvas behind the app and drew the cards' paper inside it from their screen rectangles. In use, that lagged: while scrolling, the card content moved a frame before the shader caught up, so contents and their backgrounds visibly separated. It also cost GPU time on every frame for a mostly static picture.
 
-**Dark mode** follows the system by default; Settings or the sidebar can pin Light or Dark for this device. It's applied by an inline script before first paint (with the CSP nonce), so there's no flash. Colours are CSS tokens that flip under `[data-theme=dark]` or `prefers-color-scheme`, and components use tokens rather than literal colours. Buttons get dark mesh textures too: the primary button inverts to frosted light, and the secondary turns charcoal.
+**Decision now:**
+- **Wall:** the same shader (three parallax layers of line-drawn hearts, chat bubbles, @, #, cameras and play buttons over two soft glows, with film grain) is rendered **offline** to high-quality WebP: light and dark, wide (2880×1800) and tall (1290×2796), ~110–300 KB each. `scripts/backdrop-shader.html` is the shader and `scripts/render-backdrop.mjs` re-renders it. A fixed layer shows the right one by theme and orientation (not `background-attachment: fixed`, which iOS ignores). Zero GPU cost, nothing to fall out of sync.
+- **Cards:** CSS "engineering paper": a fine grid matrix (minor line every 12px, major every 48px), drawn by the card itself, so it scrolls with its content by definition. Theme-aware through tokens.
+- **Buttons:** grainy mesh-gradient WebP textures (`scripts/generate-textures.mjs`): 1200×300 sources, sized to 170%×320% of each button so even small buttons span several colours. Hover slides the window across the mesh. Flat 1px borders, no bevels or 3D. Separate textures for dark mode.
+- **Reactions** (a like, a new message, someone going live): a DOM layer floats a few hearts or bubbles up from the point, with CSS animations, removed when done. Off with reduced motion.
+- **3D camera** (auth and landing pages): a film rangefinder modelled in code with three.js, with no downloaded model. It has satin metal plates, pebbled leatherette from a canvas bump map, a knurled lens with an iridescent coated element, and image-based lighting from three's RoomEnvironment. It follows the pointer, floats, and fires its shutter every few seconds; the page answers with a flash and a print with today's date stamp developing. Loaded only on those pages, paused off-screen, drawn once with reduced motion.
+
+**Dark mode** follows the system by default; Settings or the sidebar can pin Light or Dark for this device. It's applied by an inline script before first paint (with the CSP nonce), so there's no flash, and synced to other open tabs through the `storage` event.
 
 ## D11. Real-time across instances ✅
 
@@ -189,3 +189,11 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 ## D17. Message envelopes: what's inside the encryption (added) ✅
 
 Every encrypted message's plaintext is a small JSON envelope: text, a shared post (`postId` and an optional note), a story reply (story id, thumbnail URL, text) or a story reaction (emoji). The server can't tell them apart from ordinary text, so it never learns which post was shared or which story was answered. When the recipient opens a shared post, the API checks *their* access, so a private post shared with a non-follower shows "unavailable". Messages from before envelopes existed decode as plain text. Sharing to several chats sends one ciphertext per conversation, each with its own idempotency key, so retrying after a partial failure never duplicates.
+
+## D18. Sessions across tabs and devices (added) ✅
+
+- **Each device or browser has its own session:** a random token in an httpOnly cookie, with the server storing only its hash. Logging in on the phone doesn't touch the laptop's session.
+- **Tabs of one browser share that cookie, so they're one session.** Each tab still has its own JavaScript state and its own websocket. A `BroadcastChannel` keeps them in step: log out in one tab and every tab signs out; log in, or change your profile, and the others refresh; unlock messages in one, and the others load the key from IndexedDB (shared per browser) without asking again.
+- **Session gone** (expired, or revoked elsewhere): any API 401 signs the tab out and sends it to the login page, instead of leaving a half-working screen.
+- **Live sync:** every tab and device opens its own websocket. Events go to a per-user room on whichever API instance each socket is connected to (D11), so a message, notification or upload result appears on all of them at once. Presence counts connections, so closing one tab doesn't mark you offline while another is open. Anything not pushed (like counts, profiles) is re-fetched when a tab or app regains focus, and `staleTime` (30 s) keeps that cheap.
+- **Encryption keys per device:** the private message key never leaves a browser unencrypted. A new device downloads the password-protected backup and unlocks it locally (Argon2id), so the server can't.

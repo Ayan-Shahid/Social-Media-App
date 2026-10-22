@@ -23,7 +23,8 @@
     "next": "16.4.2",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "socket.io-client": "4.8.4"
+    "socket.io-client": "4.8.4",
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.3.3",
@@ -31,6 +32,7 @@
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@types/three": "^0.186.0",
     "sharp": "0.35.5",
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3"

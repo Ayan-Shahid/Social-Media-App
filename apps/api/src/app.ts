@@ -20,6 +20,7 @@ import { collectionsRouter } from "./routes/collections.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { storiesRouter } from "./routes/stories.js";
 import { liveRouter } from "./routes/live.js";
+import { publicRouter } from "./routes/public.js";
 import { internalRouter, opsRouter, requireAdmin } from "./routes/ops.js";
 
 export function createApp() {
@@ -66,6 +67,7 @@ export function createApp() {
   app.use(express.json({ limit: "64kb" }));
   app.use("/api", sessionMiddleware, csrfMiddleware);
 
+  app.use("/api/public", publicRouter);
   app.use("/api/auth", authRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/follow-requests", followRequestsRouter);

@@ -48,12 +48,9 @@
 
 @layer base {
   html { -webkit-text-size-adjust: 100%; background: var(--color-fog); transition: background-color 300ms; }
-  /* The shader paints the wall; this image is the fallback until (or if) WebGL starts. */
-  body { @apply text-ink font-sans antialiased; background: var(--color-fog) url("/textures/bg-static.webp") center / cover fixed; }
-  html.gl-on body { background: transparent; }
-  html:where([data-theme="dark"]) body { background-image: url("/textures/bg-static-dark.webp"); }
-  @media (prefers-color-scheme: dark) { html:where(:not([data-theme="light"])) body { background-image: url("/textures/bg-static-dark.webp"); } }
-  html.gl-on body { background-image: none; }
+  /* Transparent on purpose: the fixed .backdrop (z-index -10) paints under in-flow backgrounds, so a
+     body colour would hide it. html carries the fallback colour instead. */
+  body { @apply text-ink font-sans antialiased; background: transparent; }
   :focus-visible { outline: 2px solid var(--color-stamp); outline-offset: 2px; border-radius: 6px; }
   ::selection { background: var(--color-stamp); color: white; }
 }
@@ -65,31 +62,58 @@
     text-shadow: 0 0 6px rgb(242 105 27 / 0.55), 0 0 1px rgb(255 170 120 / 0.9);
   }
 
-  /* Surfaces. With WebGL on, the shader draws the paper (data-surface); CSS keeps a faint veil so
-     edges stay crisp while scrolling. Without WebGL, they're plain white. */
-  [data-surface] { background: var(--color-paper); }
-  html.gl-on [data-surface] { background: color-mix(in oklab, var(--color-paper) 18%, transparent); }
+  /* The wall: a pre-rendered WebP of the social-icon shader (scripts/render-backdrop.mjs). A fixed layer
+     rather than background-attachment: fixed, which iOS ignores. Wide or tall by orientation. */
+  .backdrop { position: fixed; inset: 0; z-index: -10; background: var(--color-fog) url("/textures/bg-light-wide.webp") center / cover no-repeat; }
+  @media (orientation: portrait) { .backdrop { background-image: url("/textures/bg-light-tall.webp"); } }
+  :root[data-theme="dark"] .backdrop { background-image: url("/textures/bg-dark-wide.webp"); }
+  @media (orientation: portrait) { :root[data-theme="dark"] .backdrop { background-image: url("/textures/bg-dark-tall.webp"); } }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .backdrop { background-image: url("/textures/bg-dark-wide.webp"); }
+  }
+  @media (prefers-color-scheme: dark) and (orientation: portrait) {
+    :root:not([data-theme="light"]) .backdrop { background-image: url("/textures/bg-dark-tall.webp"); }
+  }
+
+  /* Surfaces (cards, panels): paper with a fine grid matrix, drawn in CSS so it scrolls with the card.
+     A faint minor grid every 12px and a stronger major line every 48px, like engineering paper. */
+  [data-surface] {
+    --grid-minor: color-mix(in oklab, var(--color-ink) 4%, transparent);
+    --grid-major: color-mix(in oklab, var(--color-ink) 7.5%, transparent);
+    background-color: var(--color-paper);
+    background-image:
+      linear-gradient(var(--grid-major) 1px, transparent 1px), linear-gradient(90deg, var(--grid-major) 1px, transparent 1px),
+      linear-gradient(var(--grid-minor) 1px, transparent 1px), linear-gradient(90deg, var(--grid-minor) 1px, transparent 1px);
+    background-size: 48px 48px, 48px 48px, 12px 12px, 12px 12px;
+    background-position: -1px -1px;
+    box-shadow: 0 0 0 1px var(--color-rule), 0 1px 2px rgb(0 0 0 / 0.04), 0 12px 28px -14px rgb(0 0 0 / 0.18);
+  }
+  :root[data-theme="dark"] [data-surface] { box-shadow: 0 0 0 1px var(--color-rule), 0 12px 32px -12px rgb(0 0 0 / 0.6); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) [data-surface] { box-shadow: 0 0 0 1px var(--color-rule), 0 12px 32px -12px rgb(0 0 0 / 0.6); } }
+  .nav-active { background: color-mix(in oklab, var(--color-paper) 85%, transparent); box-shadow: 0 0 0 1px var(--color-rule); backdrop-filter: blur(6px); }
   .print { padding: 10px 10px 0; }
 
   /* ---------- Buttons: grainy mesh-gradient WebP + flat 1px border. No shadows, no bevels. ---------- */
   .btn {
     position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
     border-radius: 999px; padding: 0.55rem 1.1rem; font-size: 0.875rem; font-weight: 600; line-height: 1.1;
-    border: 1px solid transparent; background-size: 180% 180%; background-position: 0% 50%;
+    /* Sized to the button (170% x 320%), so every button, small or wide, spans ~60% of the mesh and
+       shows several of its colours; the 1200x300 source keeps the grain fine. Hover slides the window. */
+    border: 1px solid transparent; background-size: 170% 320%; background-position: 15% 35%;
     transition: background-position 700ms cubic-bezier(.2,.7,.2,1), border-color 200ms, transform 120ms, filter 200ms, color 200ms;
     user-select: none; isolation: isolate; overflow: hidden; cursor: pointer;
   }
-  .btn:hover:not(:disabled) { background-position: 100% 30%; }
+  .btn:hover:not(:disabled) { background-position: 90% 75%; }
   .btn:active:not(:disabled) { transform: scale(0.965); filter: brightness(0.94); transition-duration: 700ms, 200ms, 60ms, 60ms, 200ms; }
   .btn:disabled { cursor: not-allowed; filter: grayscale(0.55); opacity: 0.55; }
   .btn[data-loading="true"] { cursor: progress; animation: btn-shimmer 1.4s linear infinite; }
   .btn[data-loading="true"] > * { opacity: 0.85; }
 
-  .btn-ink { background-image: url("/textures/btn-ink.webp"); color: #fff; border-color: rgb(255 255 255 / 0.14); }
+  .btn-ink { background-color: #1b2033; background-image: url("/textures/btn-ink.webp"); color: #fff; border-color: rgb(255 255 255 / 0.14); }
   .btn-ink:hover:not(:disabled) { border-color: rgb(242 105 27 / 0.65); }
-  .btn-stamp { background-image: url("/textures/btn-stamp.webp"); color: #fff; border-color: rgb(120 36 6 / 0.35); }
+  .btn-stamp { background-color: #ff6a2a; background-image: url("/textures/btn-stamp.webp"); color: #fff; border-color: rgb(120 36 6 / 0.35); }
   .btn-stamp:hover:not(:disabled) { border-color: rgb(120 36 6 / 0.7); }
-  .btn-line { background-image: url("/textures/btn-paper.webp"); color: var(--color-ink); border-color: var(--color-rule); }
+  .btn-line { background-color: var(--color-paper); background-image: url("/textures/btn-paper.webp"); color: var(--color-ink); border-color: var(--color-rule); }
   .btn-line:hover:not(:disabled) { border-color: var(--color-ink); }
   /* Dark theme: the primary button inverts to frosted light with dark text; secondary turns charcoal. */
   .btn-ink:where([data-theme="dark"] *) { background-image: url("/textures/btn-ink-dark.webp"); color: #0f1115; border-color: rgb(255 255 255 / 0.3); }
@@ -148,6 +172,37 @@
 .live-ring > span { animation: spin 3s linear infinite reverse; }
 .live-badge { background: linear-gradient(135deg, #ff2d6f, #f2691b); animation: live-pulse 2s ease-in-out infinite; }
 @keyframes live-pulse { 50% { box-shadow: 0 0 0 4px rgb(255 45 111 / 0.25); } }
+@keyframes float-up {
+  0% { transform: translate(-50%, -50%) scale(.3) rotate(0deg); opacity: 0; }
+  15% { opacity: 1; transform: translate(calc(-50% + var(--dx) * .2), calc(-50% - 24px)) scale(1.1) rotate(calc(var(--rot) * .3)); }
+  100% { transform: translate(calc(-50% + var(--dx)), calc(-50% - 190px)) scale(.85) rotate(var(--rot)); opacity: 0; }
+}
+.float-up { animation: float-up 1.3s cubic-bezier(.2,.7,.3,1) both; }
+/* Alerts: tone colours as tokens, so they work in both themes. */
+.alert[data-tone="error"]   { color: color-mix(in oklab, var(--color-heart) 75%, var(--color-ink)); background: color-mix(in oklab, var(--color-heart) 9%, var(--color-paper)); border-color: color-mix(in oklab, var(--color-heart) 35%, transparent); }
+.alert[data-tone="warning"] { color: color-mix(in oklab, var(--color-stamp) 70%, var(--color-ink)); background: color-mix(in oklab, var(--color-stamp) 10%, var(--color-paper)); border-color: color-mix(in oklab, var(--color-stamp) 38%, transparent); }
+.alert[data-tone="success"] { color: color-mix(in oklab, var(--color-good) 80%, var(--color-ink)); background: color-mix(in oklab, var(--color-good) 10%, var(--color-paper)); border-color: color-mix(in oklab, var(--color-good) 35%, transparent); }
+.alert[data-tone="info"]    { color: var(--color-ink); background: color-mix(in oklab, var(--color-ink) 5%, var(--color-paper)); border-color: var(--color-rule); }
+.field[aria-invalid="true"] { border-color: color-mix(in oklab, var(--color-heart) 60%, transparent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-heart) 14%, transparent); }
+.field[aria-invalid="false"].touched { border-color: color-mix(in oklab, var(--color-good) 55%, transparent); }
+/* Staged button labels: each new stage slides up into place. */
+@keyframes label-in { from { transform: translateY(70%); opacity: 0; filter: blur(3px); } to { transform: none; opacity: 1; filter: none; } }
+.label-in { animation: label-in 320ms cubic-bezier(.2,.8,.2,1) both; display: inline-flex; align-items: center; gap: .5rem; }
+@keyframes draw { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+.check-draw path { stroke-dasharray: 24; animation: draw 420ms 80ms ease-out both; }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.progress-sweep { background: linear-gradient(90deg, transparent, currentColor, transparent); opacity: .6; animation: sweep 1.1s ease-in-out infinite; }
+.btn-done { filter: saturate(1.15); }
+/* Auth hero: dark backdrop render + vignette; shutter flash; the print slides out and develops. */
+.auth-hero { background: #0b0d12 url("/textures/bg-dark-wide.webp") center / cover; }
+.auth-hero::after { content: ""; position: absolute; inset: 0; background: radial-gradient(120% 90% at 50% 35%, transparent 40%, rgb(5 6 10 / .75)); pointer-events: none; }
+.auth-hero > * { z-index: 1; }
+@keyframes camera-flash { 0% { opacity: 0; } 8% { opacity: .55; } 100% { opacity: 0; } }
+.camera-flash { animation: camera-flash 700ms ease-out both; z-index: 2; }
+@keyframes print-out { 0% { transform: translateY(-40px) rotate(-4deg) scale(.9); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(0) rotate(5deg); opacity: 1; } }
+.print-out { animation: print-out 900ms 150ms cubic-bezier(.2,.8,.2,1) both; }
+.develop-print { animation: develop 3200ms 300ms cubic-bezier(.3,.1,.2,1) both; }
+.auth-card { animation: rise 420ms cubic-bezier(.2,.8,.2,1) both; }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 .rise { animation: rise 360ms cubic-bezier(.2,.8,.2,1) both; }
 @keyframes story-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }

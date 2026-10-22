@@ -1,4 +1,5 @@
 "use client";
+import { Alert } from "./Alert";
 import Link from "next/link";
 import clsx from "clsx";
 import type { User } from "@/lib/types";
@@ -61,9 +62,9 @@ export function Empty({ title, children }: { title: string; children?: React.Rea
   );
 }
 
+/** Kept for existing call sites: an error is an Alert box (tinted, bordered, with an icon). */
 export function ErrorText({ children }: { children?: React.ReactNode }) {
-  if (!children) return null;
-  return <p className="text-[13px] font-medium text-heart" role="alert">{children}</p>;
+  return <Alert tone="error" size="sm">{children}</Alert>;
 }
 
 export function PageTitle({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {

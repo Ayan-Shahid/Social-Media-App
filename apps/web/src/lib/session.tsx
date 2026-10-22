@@ -13,8 +13,10 @@ interface SessionCtx {
   isAdmin: boolean;
   privateKey: Uint8Array | null;
   myPublicKey: string | null;
-  login(email: string, password: string): Promise<void>;
-  register(username: string, email: string, password: string): Promise<void>;
+  /** onStep reports the real steps, for the button: "verify" (server), "unlock" (Argon2 key derivation here). */
+  login(email: string, password: string, onStep?: (s: "verify" | "unlock") => void): Promise<void>;
+  /** "keys" (generating the key pair + Argon2-protected backup here), then "create" (server). */
+  register(username: string, email: string, password: string, onStep?: (s: "keys" | "create") => void): Promise<void>;
   logout(): Promise<void>;
   /** Unlocks the message key with the password (or chat passcode for Google accounts). */
   unlock(secret: string): Promise<void>;
@@ -80,16 +82,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return () => { channel?.removeEventListener("message", onMsg); window.removeEventListener("glimpse:unauthorized", signedOut); };
   }, [qc, refreshMe, me]);
 
-  const login = useCallback(async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string, onStep?: (s: "verify" | "unlock") => void) => {
+    onStep?.("verify");
     const r = await api<{ user: User; keyBackup: KeyBackup | null }>("/api/auth/login", { method: "POST", body: { email, password } });
+    if (r.keyBackup?.kind !== "passcode" && r.keyBackup) onStep?.("unlock");
     if (r.keyBackup?.kind !== "passcode" && r.keyBackup) await adoptKey(r.user.id, await unlockBackup(r.keyBackup, password)).catch(() => {});
     qc.clear();
     await refreshMe();
     tellOtherTabs({ type: "login" });
   }, [qc, adoptKey, refreshMe]);
 
-  const register = useCallback(async (username: string, email: string, password: string) => {
+  const register = useCallback(async (username: string, email: string, password: string, onStep?: (s: "keys" | "create") => void) => {
+    onStep?.("keys");
     const keys = await createKeys(password);
+    onStep?.("create");
     const r = await api<{ user: User }>("/api/auth/register", { method: "POST", body: { username, email, password, keys: keys.upload } });
     await adoptKey(r.user.id, keys.privateKey);
     qc.clear();

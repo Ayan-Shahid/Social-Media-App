@@ -10,7 +10,7 @@ import type { Collection, Post } from "@/lib/types";
 import { DateStamp, UserLink } from "./ui";
 import { BookmarkIcon, CommentIcon, HeartIcon, RepostIcon, SendIcon } from "./icons";
 import { ShareSheet } from "./ShareSheet";
-import { pulse } from "./ShaderBackdrop";
+import { pulse } from "./Backdrop";
 import { Carousel } from "./Media";
 import { RichText } from "./RichText";
 

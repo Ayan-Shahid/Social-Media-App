@@ -15,7 +15,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const path = usePathname();
   const unread = useQuery({ queryKey: ["unread"], queryFn: () => api<{ count: number }>("/api/notifications/unread-count").then((r) => r.count), enabled: !!me, refetchInterval: 120_000 });
-  useEffect(() => { if (me === null) router.replace(`/login?next=${encodeURIComponent(path)}`); }, [me, router, path]);
+  // Signed out: the home page shows the public landing page; anything else asks to log in first.
+  useEffect(() => { if (me === null) router.replace(path === "/" ? "/welcome" : `/login?next=${encodeURIComponent(path)}`); }, [me, router, path]);
   if (!me) return <div className="grid min-h-dvh place-items-center"><Spinner /></div>;
 
   const active = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
@@ -38,13 +39,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Link href="/" className="display mb-9 px-3 text-[26px]">Glimpse<span className="text-stamp">.</span></Link>
         <nav className="flex flex-col gap-1">
           {NAV.map(({ href, label, icon }) => (
-            <Link key={href} href={href} data-surface={active(href) ? "" : undefined} data-pulse-anchor={href === "/messages" ? "messages" : undefined}
-              className={clsx("flex items-center gap-3.5 rounded-xl px-3 py-2.5 text-[15px] transition hover:bg-paper/50", active(href) && "font-semibold")}>
+            <Link key={href} href={href} data-pulse-anchor={href === "/messages" ? "messages" : undefined}
+              className={clsx("flex items-center gap-3.5 rounded-xl px-3 py-2.5 text-[15px] transition hover:bg-paper/50", active(href) && "nav-active font-semibold")}>
               {icon}{label}
             </Link>
           ))}
-          <Link href={`/u/${me.username}`} data-surface={path === `/u/${me.username}` ? "" : undefined}
-            className={clsx("flex items-center gap-3.5 rounded-xl px-3 py-2.5 text-[15px] transition hover:bg-paper/50", path === `/u/${me.username}` && "font-semibold")}>
+          <Link href={`/u/${me.username}`}
+            className={clsx("flex items-center gap-3.5 rounded-xl px-3 py-2.5 text-[15px] transition hover:bg-paper/50", path === `/u/${me.username}` && "nav-active font-semibold")}>
             <Avatar user={me} size={24} />Profile
           </Link>
         </nav>
