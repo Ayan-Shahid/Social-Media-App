@@ -2,7 +2,6 @@ import express from "express";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import { pinoHttp } from "pino-http";
-import path from "node:path";
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { ExpressAdapter } from "@bull-board/express";
@@ -60,18 +59,7 @@ export function createApp() {
     crossOriginResourcePolicy: { policy: "same-origin" },
   }));
 
-  // Uploaded media: server-generated names, fixed types, never sniffed or run as a page.
-  // Originals live in the ".originals" dot-folder, which `dotfiles: "deny"` never serves.
-  app.use("/media", express.static(path.resolve(config.MEDIA_DIR), {
-    index: false, dotfiles: "deny", fallthrough: false, immutable: true, maxAge: "365d",
-    setHeaders: (res, file) => {
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
-      res.setHeader("Content-Disposition", "inline");
-      if (file.endsWith(".m3u8")) res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      if (file.endsWith(".ts")) res.setHeader("Content-Type", "video/mp2t");
-    },
-  }));
+  // Media files are served from object storage by Caddy (/media/* -> the public bucket), not by the API.
 
   app.use(cookieParser());
   app.use(express.json({ limit: "64kb" }));

@@ -24,7 +24,8 @@ function Tile({ item, onRemove, onRetry, onStatus }: { item: UploadItem; onRemov
       )}
       {!ready && !failed && (
         <span className="absolute inset-0 grid place-items-center bg-white/55 text-center text-[12px] font-semibold backdrop-blur-[1px]">
-          <span className="flex flex-col items-center gap-1.5"><Spinner className="h-4 w-4" />{item.mediaId ? (isVideo ? "Encoding video…" : "Processing…") : "Uploading…"}</span>
+          <span className="flex flex-col items-center gap-1.5"><Spinner className="h-4 w-4" />{item.mediaId ? (isVideo ? "Encoding video…" : "Processing…") : `Uploading ${Math.round(item.progress * 100)}%`}</span>
+          {!item.mediaId && <span className="absolute inset-x-0 bottom-0 h-1 bg-ink/10"><span className="block h-full bg-stamp transition-[width] duration-200" style={{ width: `${item.progress * 100}%` }} /></span>}
         </span>
       )}
       {failed && (

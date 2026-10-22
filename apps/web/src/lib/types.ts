@@ -1,6 +1,6 @@
 export interface User { id: string; username: string; displayName: string; bio: string; avatarUrl: string | null }
 export interface Media {
-  id: string; kind: "image" | "video"; status: "processing" | "ready" | "failed"; error: string | null;
+  id: string; kind: "image" | "video"; status: "uploading" | "processing" | "ready" | "failed"; error: string | null;
   url: string | null; srcset: { w: number; url: string }[]; hls: string | null; posterUrl: string | null;
   width: number; height: number; durationMs: number | null;
 }

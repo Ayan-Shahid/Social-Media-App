@@ -15,7 +15,9 @@ export default defineConfig({
       APP_DB_PASSWORD: "testpass",
       WORKER_DB_PASSWORD: "workerpass",
       APP_ORIGIN: "http://localhost:3000",
-      MEDIA_DIR: "/tmp/glimpse-test-media",
+      // Any S3 API works for tests; locally a moto server (pip install "moto[server]"; moto_server -p 4566).
+      S3_ENDPOINT: process.env.TEST_S3_ENDPOINT ?? "http://localhost:4566",
+      S3_ACCESS_KEY: "test", S3_SECRET_KEY: "test",
       REDIS_CACHE_URL: process.env.TEST_REDIS_CACHE_URL ?? "redis://localhost:6380/14",
       REDIS_QUEUE_URL: process.env.TEST_REDIS_QUEUE_URL ?? "redis://localhost:6381/14",
       TEST_REDIS_LIMITS: "1",

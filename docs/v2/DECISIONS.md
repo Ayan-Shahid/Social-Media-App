@@ -136,3 +136,17 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 **Why:** a worker does system work across many users (fan-out writes to every follower's feed, a notification goes to someone other than the actor), so it can't act "as one user" under RLS. Giving it the owner role would mean a bug in a media job could drop tables. A separate role keeps RLS absolute for every request path, and makes the exception narrow, named and reviewable in one migration (`0005_v2_security`).
 
 **Trade-off:** one more password in `.env` (`WORKER_DB_PASSWORD`), and grants must be updated when a job needs a new table. A forgotten grant fails loudly ("permission denied"), which is the right way to fail.
+
+## D14. Object storage: S3 API, SeaweedFS, signed direct uploads (added) ✅
+
+**Decision:** photos and videos live in S3-compatible object storage, not on the API's disk. In Docker that's **SeaweedFS**; the code only speaks the S3 API, so Cloudflare R2 or AWS S3 is a config change.
+
+- **Why not MinIO:** its free edition stopped shipping Docker images and binaries in October 2025, and the repository was archived in 2026. A Compose file pinned to it would run an unpatched image forever. SeaweedFS is Apache-2.0, actively released, and has an official image.
+- **Two buckets, two rules.** `uploads` is private: originals, which may carry GPS/EXIF data, and are deleted after processing. `media` is public-read: only the worker writes there, and only re-encoded files under random keys.
+- **Direct uploads.** The browser asks the API for a slot (declaring type and size). It gets a URL signed for exactly that Content-Type and Content-Length, valid for 10 minutes, and PUTs the file straight to storage. Then it calls `complete`. The API never carries file bytes, so a 60 MB video doesn't hold an API worker for the whole upload, and API memory stays flat.
+- **Trust nothing the browser declared.** On `complete`, the API checks the stored size and the magic bytes of the first 4 KB. The worker checks the type again on the full file before decoding. A mismatch fails the upload and deletes the object.
+- **Same-origin through Caddy.** URLs are signed for the public address. Caddy forwards `PUT /uploads/*` to storage with the Host header untouched (the signature covers it), and `GET /media/*` with `nosniff` and a sandbox CSP. Any other method on those paths gets a 405, so originals can't be read from outside even if storage were misconfigured. No CORS setup is needed.
+- **RLS for the state machine.** The app role may update a media row only while it's the owner's and still `uploading`, and only to `processing` or `failed`. Everything after that belongs to the worker role.
+- **Cleanup.** Uploads never completed are deleted after an hour, and unused media after a day (maintenance job).
+
+**Trade-off:** public media URLs are unguessable but not signed per viewer. A follower of a private account who copies an image URL can share it, as with most CDNs. Per-viewer signed GET URLs would close that, at the cost of HTTP caching and cache entries that expire.

@@ -5,7 +5,7 @@ import pg from "pg";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import type { Express } from "express";
-import { Client, ORIGIN, asDb, key, pngBuffer, resetAll, sodium, waitFor } from "./test/harness.js";
+import { Client, fetchMedia, ORIGIN, asDb, key, pngBuffer, resetAll, sodium, waitFor } from "./test/harness.js";
 
 let app: Express;
 let workers: { close(): Promise<void> };
@@ -68,38 +68,65 @@ describe("CSRF", () => {
 });
 
 describe("upload sanitization", () => {
-  const up = (c: Client, buf: Buffer, name: string, type: string, purpose = "post") =>
-    c.send("post", `/api/media?purpose=${purpose}`, undefined, { "Idempotency-Key": key() }).attach("file", buf, { filename: name, contentType: type });
+  const up = (c: Client, buf: Buffer, type: string, purpose = "post") => c.startUpload(buf, type, purpose);
 
-  it("accepts a real PNG: 202 now, re-encoded WebP sizes later, random names", async () => {
+  it("accepts a real PNG: uploaded straight to storage, re-encoded WebP sizes later, random names", async () => {
     const m = await alice.upload(await pngBuffer(), "my photo.png");
     expect(m.status).toBe("ready");
     expect(m.url).toMatch(/^\/media\/[0-9a-f-]{36}\/\d+\.webp$/);
     expect(m.srcset.length).toBeGreaterThanOrEqual(1);
-    const served = await request(app).get(m.url);
-    expect(served.headers["x-content-type-options"]).toBe("nosniff");
-    expect(served.headers["content-type"]).toMatch(/image\/webp/);
+    const served = await fetchMedia(m.url);
+    expect(served.headers.get("content-type")).toMatch(/image\/webp/);
+    expect(served.headers.get("cache-control")).toMatch(/immutable/);
   });
-  it("rejects an HTML page renamed to .png (checked in the request)", async () => {
-    expect((await up(alice, Buffer.from("<html><script>alert(document.cookie)</script></html>"), "cat.png", "image/png")).status).toBe(415);
+  it("signs the upload URL for exactly the declared type, and never for the API's own host", async () => {
+    const slot = await alice.send("post", "/api/media/uploads", { purpose: "post", mime: "image/png", size: 1234 }, { "Idempotency-Key": key() });
+    expect(slot.status).toBe(201);
+    const u = new URL(slot.body.upload.url);
+    expect(u.pathname).toMatch(new RegExp(`^/uploads/incoming/${alice.user!.id}/[0-9a-f-]{36}$`));
+    expect(u.searchParams.get("X-Amz-SignedHeaders")).toContain("content-length");
+    expect(u.searchParams.get("X-Amz-SignedHeaders")).toContain("content-type");
+    expect(Number(u.searchParams.get("X-Amz-Expires"))).toBeLessThanOrEqual(600);
   });
-  it("rejects an SVG (can carry scripts)", async () => {
-    expect((await up(alice, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>'), "x.svg", "image/svg+xml")).status).toBe(415);
+  it("refuses to sign uploads that are too big or the wrong kind for their purpose", async () => {
+    const big = await alice.send("post", "/api/media/uploads", { purpose: "post", mime: "image/png", size: 500 * 1024 * 1024 }, { "Idempotency-Key": key() });
+    expect(big.status).toBe(413);
+    const svg = await alice.send("post", "/api/media/uploads", { purpose: "post", mime: "image/svg+xml", size: 100 }, { "Idempotency-Key": key() });
+    expect(svg.status).toBe(415);
+    const videoAvatar = await alice.send("post", "/api/media/uploads", { purpose: "avatar", mime: "video/mp4", size: 100 }, { "Idempotency-Key": key() });
+    expect(videoAvatar.status).toBe(415);
   });
-  it("rejects a Windows program renamed to .png", async () => {
-    expect((await up(alice, Buffer.concat([Buffer.from("MZ"), Buffer.alloc(200, 0x90)]), "photo.png", "image/png")).status).toBe(415);
+  it("rejects an HTML page uploaded as a PNG (magic bytes checked on complete), and deletes it", async () => {
+    const r = await up(alice, Buffer.from("<html><script>alert(document.cookie)</script></html>"), "image/png");
+    expect(r.status).toBe(415);
+  });
+  it("rejects a Windows program uploaded as a PNG", async () => {
+    expect((await up(alice, Buffer.concat([Buffer.from("MZ"), Buffer.alloc(200, 0x90)]), "image/png")).status).toBe(415);
+  });
+  it("rejects a video declared as a photo (declared and real type must match)", async () => {
+    const out = "/tmp/glimpse-test-tiny.mp4";
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=5", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", out]);
+    expect((await up(alice, fs.readFileSync(out), "image/png")).status).toBe(415);
+  });
+  it("catches a file bigger than declared, even if storage doesn't enforce the signed length", async () => {
+    const buf = await pngBuffer();
+    const r = await alice.startUpload(Buffer.concat([buf, Buffer.alloc(5000)]), "image/png", "post", buf.length);
+    // A real S3 rejects the PUT (signature covers Content-Length); the test storage accepts it, so "complete" must catch it.
+    expect(r.status).toBe(400);
   });
   it("garbage that only starts like a JPEG passes the quick check but fails processing (no retries)", async () => {
     const fake = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("this is not really an image".repeat(20))]);
-    const r = await up(alice, fake, "a.jpg", "image/jpeg");
+    const r = await up(alice, fake, "image/jpeg");
     expect(r.status).toBe(202);
     const m = await waitFor(async () => { const x = await alice.get(`/api/media/${r.body.media.id}`); return x.body.media.status === "failed" ? x.body.media : null; });
     expect(m.error).toMatch(/couldn't be read/);
   });
-  it("strips a script hidden after a real image (polyglot)", async () => {
+  it("strips a script hidden after a real image (polyglot), and deletes the original", async () => {
     const m = await alice.upload(Buffer.concat([await pngBuffer(), Buffer.from("<script>alert('pwned')</script>")]), "p.png");
-    const served = await request(app).get(m.url).buffer(true).parse((res, cb) => { const c: Buffer[] = []; res.on("data", (d: Buffer) => c.push(d)); res.on("end", () => cb(null, Buffer.concat(c))); });
-    expect((served.body as Buffer).includes(Buffer.from("pwned"))).toBe(false);
+    const served = Buffer.from(await (await fetchMedia(m.url)).arrayBuffer());
+    expect(served.includes(Buffer.from("pwned"))).toBe(false);
+    const { BUCKETS, head } = await import("./infra/storage.js");
+    expect(await head(BUCKETS.uploads, `incoming/${alice.user!.id}/${m.id}`)).toBeNull();
   });
   it("turns a real video into adaptive HLS with a poster", async () => {
     const out = "/tmp/glimpse-test-clip.webm";
@@ -108,15 +135,15 @@ describe("upload sanitization", () => {
     expect(m.status, m.error).toBe("ready");
     expect(m.kind).toBe("video");
     expect(m.hls).toMatch(/master\.m3u8$/);
-    const master = await request(app).get(m.hls);
-    expect(master.headers["content-type"]).toMatch(/mpegurl/);
-    expect(master.text).toMatch(/#EXT-X-STREAM-INF/);
-    expect(master.text.match(/#EXT-X-STREAM-INF/g)!.length).toBe(1); // 360p source: no upscaled 720p rendition
+    const master = await fetchMedia(m.hls);
+    expect(master.headers.get("content-type")).toMatch(/mpegurl/);
+    const text = await master.text();
+    expect(text).toMatch(/#EXT-X-STREAM-INF/);
+    expect(text.match(/#EXT-X-STREAM-INF/g)!.length).toBe(1); // 360p source: no upscaled 720p rendition
     expect(m.posterUrl).toMatch(/poster\.webp$/);
   });
-  it("won't serve originals or files outside the media folder", async () => {
-    expect([400, 403, 404]).toContain((await request(app).get("/media/..%2f..%2fetc%2fpasswd")).status);
-    expect([403, 404]).toContain((await request(app).get("/media/.originals/anything")).status);
+  it("the API itself serves no files", async () => {
+    expect((await request(app).get("/media/anything/480.webp")).status).toBe(404);
   });
 });
 

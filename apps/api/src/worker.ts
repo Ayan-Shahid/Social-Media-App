@@ -8,6 +8,7 @@ import { config } from "./config.js";
 import { queueConnection, redis } from "./infra/redis.js";
 import { queue, closeQueues, type QueueName } from "./infra/queues.js";
 import { startRelay } from "./infra/outbox.js";
+import { ensureBuckets } from "./infra/storage.js";
 import { jobsProcessed } from "./infra/metrics.js";
 import { closeWorkerPool } from "./db/worker-pool.js";
 import { mediaJob, markFailed } from "./jobs/media.js";
@@ -58,6 +59,8 @@ async function scheduleMaintenance() {
 
 const isMain = process.argv[1]?.endsWith("worker.js") || process.argv[1]?.endsWith("worker.ts");
 if (isMain) {
+  const buckets = () => ensureBuckets().catch((e) => { console.error("storage not ready, retrying:", (e as Error).message); setTimeout(buckets, 3000); });
+  buckets();
   const w = startWorkers();
   scheduleMaintenance().catch((e) => console.error("schedule failed", e));
   console.log(`Glimpse worker ${config.INSTANCE_ID} started`);

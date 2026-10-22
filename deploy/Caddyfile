@@ -37,7 +37,37 @@
 		respond 404
 	}
 
-	@api path /api/* /media/* /socket.io/* /admin/*
+	# Object storage (DECISIONS.md D14). Only two doors, each with one verb:
+	#   GET  /media/*    processed public files, with headers that stop a browser treating one as a page
+	#   PUT  /uploads/*  signed direct uploads. The Host header is passed through untouched, because the
+	#                    signature covers it. Reading /uploads (originals) is impossible from outside.
+	@media {
+		path /media/*
+		method GET HEAD
+	}
+	handle @media {
+		header {
+			X-Content-Type-Options nosniff
+			Content-Security-Policy "default-src 'none'; sandbox"
+			Content-Disposition inline
+			Cross-Origin-Resource-Policy same-origin
+			-Server
+		}
+		reverse_proxy storage:8333
+	}
+	@upload {
+		path /uploads/*
+		method PUT
+	}
+	handle @upload {
+		reverse_proxy storage:8333
+	}
+	@storage_other path /media/* /uploads/*
+	handle @storage_other {
+		respond 405
+	}
+
+	@api path /api/* /socket.io/* /admin/*
 	handle @api {
 		import api_upstreams
 	}

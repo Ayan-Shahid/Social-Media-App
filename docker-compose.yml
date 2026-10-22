@@ -4,8 +4,8 @@
 #   docker compose up -d --build                      # http://localhost:8090
 #   docker compose --profile tunnel up -d --build     # also start the Cloudflare tunnel
 #
-# Startup order: db + redis -> migrate (applies schema changes, then exits) -> api-1, api-2, worker, web -> proxy -> tunnel.
-# Memory limits keep the whole stack around 2.6 GB so it can share a 2018 MacBook Pro with Veritas.
+# Startup order: db + redis + storage -> migrate (applies schema changes, then exits) -> api-1, api-2, worker, web -> proxy -> tunnel.
+# Memory limits keep the whole stack around 3 GB so it can share a 2018 MacBook Pro with Veritas.
 name: glimpse
 
 x-api: &api
@@ -18,18 +18,21 @@ x-api: &api
     REDIS_CACHE_URL: redis://redis-cache:6379
     REDIS_QUEUE_URL: redis://redis-queue:6379
     APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8090}
-    MEDIA_DIR: /data/media
     TRUST_PROXY: "1"
     ADMIN_USERNAMES: ${ADMIN_USERNAMES:-}
     GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
     FANOUT_THRESHOLD: ${FANOUT_THRESHOLD:-10000}
-  volumes:
-    - media:/data/media
+    # Object storage: the API and worker talk to it directly; browsers reach it through Caddy.
+    S3_ENDPOINT: http://storage:8333
+    S3_PUBLIC_ENDPOINT: ${APP_ORIGIN:-http://localhost:8090}
+    S3_ACCESS_KEY: glimpse
+    S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
   depends_on:
     migrate: { condition: service_completed_successfully }
     redis-cache: { condition: service_healthy }
     redis-queue: { condition: service_healthy }
+    storage: { condition: service_healthy }
   deploy:
     resources:
       limits: { memory: 320m }
@@ -84,6 +87,29 @@ services:
       resources:
         limits: { memory: 320m }
 
+  # S3-compatible object storage for photos and videos (DECISIONS.md D14). Not exposed to the host:
+  # browsers reach it only through Caddy (GET /media/*, PUT /uploads/*).
+  storage:
+    image: chrislusf/seaweedfs:${SEAWEEDFS_TAG:-4.40}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/seaweedfs.sh"]
+    environment:
+      S3_ACCESS_KEY: glimpse
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
+    volumes:
+      - ./deploy/seaweedfs.sh:/seaweedfs.sh:ro
+      - storage-data:/data
+    healthcheck:
+      # master answering + S3 port open (S3 itself answers 403 to anonymous probes, which is correct)
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status && nc -z 127.0.0.1 8333"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { memory: 384m }
+
   # Runs every pending migration as the database owner, creates/updates the app and worker roles, then exits.
   migrate:
     build: ./apps/api
@@ -124,6 +150,8 @@ services:
     deploy:
       resources:
         limits: { memory: 640m } # ffmpeg
+    tmpfs:
+      - /tmp:size=512m # video transcoding scratch space (originals are deleted after processing)
 
   web:
     build: ./apps/web
@@ -149,6 +177,7 @@ services:
       - api-1
       - api-2
       - web
+      - storage
     deploy:
       resources:
         limits: { memory: 96m }
@@ -167,4 +196,4 @@ services:
 volumes:
   db-data:
   queue-data:
-  media:
+  storage-data:

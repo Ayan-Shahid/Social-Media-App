@@ -12,7 +12,14 @@ const schema = z.object({
   APP_DB_PASSWORD: z.string().optional(),
   // Public address of the site, e.g. https://glimpse.example.com. Used for the CSRF origin check and cookies.
   APP_ORIGIN: z.string().url().default("http://localhost:3000"),
-  MEDIA_DIR: z.string().default("./data/media"),
+  // Object storage (S3 API). S3_PUBLIC_ENDPOINT is what browsers use for signed uploads (APP_ORIGIN behind Caddy).
+  S3_ENDPOINT: z.string().url().default("http://localhost:8333"),
+  S3_PUBLIC_ENDPOINT: z.string().url().optional(),
+  S3_REGION: z.string().default("us-east-1"),
+  S3_ACCESS_KEY: z.string().default("glimpse"),
+  S3_SECRET_KEY: z.string().default("glimpse-dev-secret"),
+  S3_BUCKET_UPLOADS: z.string().default("uploads"),
+  S3_BUCKET_MEDIA: z.string().default("media"),
   SESSION_DAYS: z.coerce.number().default(30),
   MAX_IMAGE_MB: z.coerce.number().default(10),
   MAX_VIDEO_MB: z.coerce.number().default(60),

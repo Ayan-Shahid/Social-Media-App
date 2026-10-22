@@ -21,7 +21,9 @@ export async function resetAll() {
   await redis.flushdb();
   const { queueConnection } = await import("../infra/redis.js");
   const q = queueConnection(); await q.flushdb(); await q.quit();
-  fs.rmSync("/tmp/glimpse-test-media", { recursive: true, force: true });
+  const { ensureBuckets, removePrefix, BUCKETS } = await import("../infra/storage.js");
+  await ensureBuckets();
+  await removePrefix(BUCKETS.uploads, ""); await removePrefix(BUCKETS.media, "");
   await _sodium.ready;
   sodium = _sodium;
 }
@@ -71,9 +73,21 @@ export class Client {
     this.user = r.body.user;
     return this;
   }
+  /**
+   * The browser's upload flow: ask for a slot, PUT straight to storage, then "complete".
+   * Returns the response that ended it: the slot request if refused there, otherwise "complete".
+   * `declaredSize` lets a test lie about the size.
+   */
+  async startUpload(buf: Buffer, mime: string, purpose = "post", declaredSize = buf.length) {
+    const slot = await this.send("post", "/api/media/uploads", { purpose, mime, size: declaredSize }, { "Idempotency-Key": key() });
+    if (slot.status !== 201) return slot;
+    const put = await fetch(slot.body.upload.url, { method: "PUT", body: new Uint8Array(buf), headers: slot.body.upload.headers });
+    expect(put.ok, `PUT to storage: ${put.status} ${await put.clone().text()}`).toBe(true);
+    return this.send("post", `/api/media/${slot.body.media.id}/complete`);
+  }
   /** Uploads a file and waits for the worker to finish processing it. */
   async upload(buf: Buffer, name = "a.png", purpose = "post") {
-    const r = await this.send("post", `/api/media?purpose=${purpose}`, undefined, { "Idempotency-Key": key() }).attach("file", buf, name);
+    const r = await this.startUpload(buf, mimeOf(name), purpose);
     expect(r.status, JSON.stringify(r.body)).toBe(202);
     return waitFor(async () => {
       const m = await this.get(`/api/media/${r.body.media.id}`);
@@ -88,6 +102,11 @@ export class Client {
   }
   follow(userId: string) { return this.send("put", `/api/users/${userId}/follow`); }
 }
+
+const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime", svg: "image/svg+xml" };
+export const mimeOf = (name: string) => MIME[name.split(".").pop()!.toLowerCase()] ?? "application/octet-stream";
+/** Fetches a public media URL the way Caddy serves it: straight from the media bucket. */
+export const fetchMedia = (url: string) => fetch(`${process.env.S3_ENDPOINT}${url}`);
 
 export const key = () => `k_${Math.random().toString(36).slice(2)}${Date.now()}`;
 export const pngBuffer = (color = "#3366cc") => sharp({ create: { width: 64, height: 48, channels: 3, background: color } }).png().toBuffer();

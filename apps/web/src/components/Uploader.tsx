@@ -1,6 +1,9 @@
 "use client";
-// Uploads files and follows their processing. The API answers 202 right away; the worker sends
-// `media:status` over the WebSocket when done (with polling as a fallback).
+// Uploads files and follows their processing (DECISIONS.md D14):
+//   1. ask the API for a signed upload URL (declaring type and size)
+//   2. PUT the file straight to object storage, with progress
+//   3. tell the API it's complete; a worker processes it and pushes `media:status` over the WebSocket
+//      (with polling as a fallback).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { api, ApiError, newIdempotencyKey } from "@/lib/api";
@@ -14,7 +17,32 @@ export const ACCEPT: Record<Purpose, string> = {
   avatar: "image/jpeg,image/png,image/webp,image/heic",
 };
 
-export interface UploadItem { localId: string; file: File; preview: string; mediaId: string | null; error: string | null }
+export interface UploadItem { localId: string; file: File; preview: string; mediaId: string | null; error: string | null; progress: number }
+
+type Slot = { media: Media; upload: { url: string; method: "PUT"; headers: Record<string, string> } };
+
+/** PUT with upload progress (fetch can't report upload progress yet; XHR can). */
+function put(url: string, file: File, headers: Record<string, string>, onProgress?: (p: number) => void) {
+  return new Promise<void>((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url);
+    for (const [k, v] of Object.entries(headers)) x.setRequestHeader(k, v);
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+    x.onload = () => (x.status >= 200 && x.status < 300 ? resolve() : reject(new ApiError(x.status, "The upload was refused. Try again.")));
+    x.onerror = () => reject(new ApiError(0, "Upload failed. Check your connection."));
+    x.send(file);
+  });
+}
+
+/** Steps 1-3. Returns the media row (status "processing"). The key makes a retried click safe. */
+export async function directUpload(file: File, purpose: Purpose, idempotencyKey: string, onProgress?: (p: number) => void): Promise<Media> {
+  const slot = await api<Slot>("/api/media/uploads", { method: "POST", body: { purpose, mime: file.type || "application/octet-stream", size: file.size }, idempotencyKey });
+  if (slot.media.status === "uploading") {
+    await put(slot.upload.url, file, slot.upload.headers, onProgress);
+  }
+  onProgress?.(1);
+  return (await api<{ media: Media }>(`/api/media/${slot.media.id}/complete`, { method: "POST" })).media;
+}
 
 /** Live status of one media item (socket push, poll fallback). */
 export function useMediaStatus(mediaId: string | null) {
@@ -22,7 +50,7 @@ export function useMediaStatus(mediaId: string | null) {
     queryKey: ["media", mediaId],
     queryFn: () => api<{ media: Media }>(`/api/media/${mediaId}`).then((r) => r.media),
     enabled: !!mediaId,
-    refetchInterval: (q) => (q.state.data?.status === "processing" || !q.state.data ? 3000 : false),
+    refetchInterval: (q) => (q.state.data?.status === "processing" || q.state.data?.status === "uploading" || !q.state.data ? 3000 : false),
   });
 }
 
@@ -40,19 +68,20 @@ export function useUploads(purpose: Purpose, max: number) {
       return;
     }
     if (!keys.current.has(item.localId)) keys.current.set(item.localId, newIdempotencyKey());
-    const form = new FormData();
-    form.append("file", item.file);
+    const setProgress = (progress: number) => setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, progress } : x)));
     try {
-      const r = await api<{ media: Media }>(`/api/media?purpose=${purpose}`, { method: "POST", form, idempotencyKey: keys.current.get(item.localId) });
-      qc.setQueryData(["media", r.media.id], r.media);
-      setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, mediaId: r.media.id, error: null } : x)));
+      const m = await directUpload(item.file, purpose, keys.current.get(item.localId)!, setProgress);
+      qc.setQueryData(["media", m.id], m);
+      setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, mediaId: m.id, error: null } : x)));
     } catch (e) {
-      setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, error: e instanceof ApiError ? e.message : "Upload failed." } : x)));
+      // A refused file won't upload on retry; a new key gets a new signed URL for real retries.
+      keys.current.delete(item.localId);
+      setItems((l) => l.map((x) => (x.localId === item.localId ? { ...x, progress: 0, error: e instanceof ApiError ? e.message : "Upload failed." } : x)));
     }
   }, [purpose, qc]);
 
   const add = useCallback((files: FileList | File[]) => {
-    const list = Array.from(files).slice(0, Math.max(0, max - items.length)).map((file) => ({ localId: crypto.randomUUID(), file, preview: URL.createObjectURL(file), mediaId: null, error: null }));
+    const list = Array.from(files).slice(0, Math.max(0, max - items.length)).map((file) => ({ localId: crypto.randomUUID(), file, preview: URL.createObjectURL(file), mediaId: null, error: null, progress: 0 }));
     setItems((l) => [...l, ...list]);
     list.forEach(send);
   }, [items.length, max, send]);
@@ -64,12 +93,10 @@ export function useUploads(purpose: Purpose, max: number) {
 }
 
 /** Uploads one file and resolves once it's processed. For avatars and stories. */
-export async function uploadAndWait(file: File, purpose: Purpose): Promise<Media> {
-  const form = new FormData();
-  form.append("file", file);
-  const r = await api<{ media: Media }>(`/api/media?purpose=${purpose}`, { method: "POST", form, idempotencyKey: newIdempotencyKey() });
+export async function uploadAndWait(file: File, purpose: Purpose, onProgress?: (p: number) => void): Promise<Media> {
+  const r = await directUpload(file, purpose, newIdempotencyKey(), onProgress);
   for (let i = 0; i < 120; i++) {
-    const m = await api<{ media: Media }>(`/api/media/${r.media.id}`).then((x) => x.media);
+    const m = await api<{ media: Media }>(`/api/media/${r.id}`).then((x) => x.media);
     if (m.status === "ready") return m;
     if (m.status === "failed") throw new ApiError(415, m.error ?? "Processing failed.");
     await new Promise((res) => setTimeout(res, i < 10 ? 500 : 1500));

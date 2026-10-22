@@ -127,9 +127,9 @@ export const media = pgTable(
     ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(), // image | video
     purpose: text("purpose").notNull().default("post"), // post | avatar | story | short
-    status: text("status").notNull().default("ready"), // processing | ready | failed
+    status: text("status").notNull().default("ready"), // uploading | processing | ready | failed
     error: text("error"),
-    originalPath: text("original_path"), // private, deleted after processing
+    originalPath: text("original_path"), // object key in the private uploads bucket; deleted after processing
     // Output files, all under /media/<id>/: { src, srcset: [{w, path}], hls, poster }
     variants: jsonb("variants").$type<MediaVariants>(),
     fileName: text("file_name"), // v1 single-file output (kept for old rows)
@@ -143,9 +143,16 @@ export const media = pgTable(
   },
   (t) => [
     check("media_kind", sql`${t.kind} in ('image', 'video')`),
-    check("media_status", sql`${t.status} in ('processing', 'ready', 'failed')`),
+    check("media_status", sql`${t.status} in ('uploading', 'processing', 'ready', 'failed')`),
     pgPolicy("media_select", { for: "select", to: appRole, using: signedIn }),
     pgPolicy("media_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.ownerId} = ${me}` }),
+    // "Complete upload": the owner may only move their own row out of 'uploading'. Everything
+    // after that (ready, variants, sizes) is the worker's job, under its own role.
+    pgPolicy("media_complete_own", {
+      for: "update", to: appRole,
+      using: sql`${t.ownerId} = ${me} and ${t.status} = 'uploading'`,
+      withCheck: sql`${t.ownerId} = ${me} and ${t.status} in ('processing', 'failed')`,
+    }),
   ],
 ).enableRLS();
 

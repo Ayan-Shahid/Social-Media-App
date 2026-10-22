@@ -94,7 +94,7 @@ describe("carousels and shorts", () => {
     const feed = await carol.get("/api/posts/shorts");
     expect(feed.body.posts[0].id).toBe(short.id);
     expect(feed.body.posts[0].media[0].hls).toMatch(/master\.m3u8$/);
-    const photo = await bob.send("post", "/api/media?purpose=short", undefined, { "Idempotency-Key": key() }).attach("file", await pngBuffer(), "a.png");
+    const photo = await bob.startUpload(await pngBuffer(), "image/png", "short");
     expect(photo.status).toBe(415);
   });
 });

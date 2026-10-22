@@ -17,6 +17,8 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1155.0",
+    "@aws-sdk/s3-request-presigner": "^3.1155.0",
     "@bull-board/api": "9.10.5",
     "@bull-board/express": "9.10.5",
     "@node-rs/argon2": "2.2.2",

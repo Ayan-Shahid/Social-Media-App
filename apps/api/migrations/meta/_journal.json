@@ -57,6 +57,13 @@
       "when": 1792683203692,
       "tag": "0007_members_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792689464804,
+      "tag": "0008_media_uploading",
+      "breakpoints": true
     }
   ]
 }

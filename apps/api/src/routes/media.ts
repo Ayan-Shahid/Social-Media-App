@@ -1,56 +1,72 @@
-// Uploads (DECISIONS.md D8). The request only checks the file and stores it; a worker processes it.
-// The client gets the result over the realtime bus (media:status) or by polling GET /media/:id.
+// Uploads (DECISIONS.md D8, D14). Three steps, and the API never carries the file bytes:
+//   POST /api/media/uploads        declare type + size  -> media row ("uploading") + signed PUT URL
+//   PUT  <signed URL>              browser -> object storage, directly
+//   POST /api/media/:id/complete   API checks size + magic bytes, then a worker processes it
+// The client hears the result over the realtime bus (media:status) or by polling GET /media/:id.
 import { Router } from "express";
-import multer from "multer";
-import fs from "node:fs/promises";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { asUser } from "../db/client.js";
 import { media } from "../db/schema.js";
-import { badRequest, HttpError, notFound, parse, requireUser } from "../lib/http.js";
+import { HttpError, notFound, parse, requireUser } from "../lib/http.js";
 import { idempotent } from "../middleware/idempotency.js";
-import { storeOriginal, validateUpload, type Purpose } from "../media/pipeline.js";
+import { checkActual, checkDeclared, type Purpose } from "../media/pipeline.js";
 import { emit } from "../infra/outbox.js";
+import { BUCKETS, head, readHead, removeObject, signUpload } from "../infra/storage.js";
 import { limiter } from "../lib/limits.js";
-import { config } from "../config.js";
 import { mediaDto } from "../services/hydrate.js";
 
 export const mediaRouter = Router();
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: config.MAX_VIDEO_MB * 1024 * 1024, files: 1, fields: 5, parts: 6 } });
 const uploadLimiter = limiter("upload", 60 * 60_000, 120, "Upload limit reached. Try again later.", true);
-
-function receive(req: Parameters<Parameters<typeof mediaRouter.post>[1]>[0], res: Parameters<Parameters<typeof mediaRouter.post>[1]>[1], next: (e?: unknown) => void) {
-  upload.single("file")(req, res, (err: unknown) => {
-    if (err instanceof multer.MulterError) {
-      return next(err.code === "LIMIT_FILE_SIZE" ? new HttpError(413, `File too large. Max ${config.MAX_VIDEO_MB} MB.`) : badRequest("Upload one file in the 'file' field."));
-    }
-    next(err);
-  });
-}
-
 const purposes = z.enum(["post", "avatar", "story", "short"]);
+type Row = typeof media.$inferSelect;
+const dto = (m: Row) => mediaDto({ ...m, file_name: m.fileName, poster_file_name: m.posterFileName, duration_ms: m.durationMs });
 
-mediaRouter.post("/", (req, _res, next) => { requireUser(req); next(); }, uploadLimiter, receive, idempotent, async (req, res) => {
+mediaRouter.post("/uploads", (req, _res, next) => { requireUser(req); next(); }, uploadLimiter, idempotent, async (req, res) => {
   const me = requireUser(req);
-  if (!req.file) throw badRequest("Choose a photo or video.");
-  const purpose = parse(purposes.default("post"), req.query.purpose) as Purpose;
-  const type = await validateUpload(req.file.buffer, purpose);
+  const body = parse(z.object({
+    purpose: purposes.default("post"),
+    mime: z.string().max(100),
+    size: z.number().int().min(1),
+  }), req.body);
+  const kind = checkDeclared(body.mime, body.size, body.purpose as Purpose);
   const id = randomUUID();
-  const originalPath = await storeOriginal(id, req.file.buffer);
-  try {
-    // Media row + "media.uploaded" event in ONE transaction: the job can't be lost or run for a rolled-back row.
-    const row = await asUser(me, async (tx) => {
-      const [m] = await tx.insert(media).values({ id, ownerId: me, kind: type.kind, purpose, status: "processing", originalPath, mime: type.mime, bytes: req.file!.size }).returning();
-      await emit(tx, me, "media.uploaded", { mediaId: id, ownerId: me, kind: type.kind, purpose });
-      return m!;
-    });
-    res.status(202).json({ media: mediaDto({ ...row, file_name: row.fileName, poster_file_name: row.posterFileName, duration_ms: row.durationMs }) });
-  } catch (e) {
-    await fs.rm(originalPath, { force: true });
+  const key = `incoming/${me}/${id}`; // owner in the key: easy audits and per-user cleanup
+  const [row] = await asUser(me, (tx) => tx.insert(media).values({
+    id, ownerId: me, kind, purpose: body.purpose, status: "uploading", originalPath: key, mime: body.mime, bytes: body.size,
+  }).returning());
+  res.status(201).json({ media: dto(row!), upload: await signUpload(key, body.mime, body.size) });
+});
+
+mediaRouter.post("/:id/complete", async (req, res) => {
+  const me = requireUser(req);
+  const id = parse(z.uuid(), req.params.id);
+  const [m] = await asUser(me, (tx) => tx.select().from(media).where(and(eq(media.id, id), eq(media.ownerId, me))));
+  if (!m) throw notFound();
+  if (m.status !== "uploading") return res.status(202).json({ media: dto(m) }); // already done: safe to repeat
+
+  const obj = await head(BUCKETS.uploads, m.originalPath!);
+  if (!obj) throw new HttpError(409, "The upload hasn't arrived yet. Try again.");
+  const fail = async (e: unknown) => {
+    await removeObject(BUCKETS.uploads, m.originalPath!);
+    await asUser(me, (tx) => tx.update(media).set({ status: "failed", error: (e as Error).message, originalPath: null }).where(eq(media.id, id)));
     throw e;
-  }
+  };
+  // The signature already pins the size, but storage that ignores signed headers would let it slip.
+  if (obj.size !== m.bytes) await fail(new HttpError(400, "The uploaded file isn't the size that was declared."));
+  try { await checkActual(await readHead(BUCKETS.uploads, m.originalPath!), m.kind as "image" | "video", m.purpose as Purpose); }
+  catch (e) { await fail(e); }
+
+  // Status change + "media.uploaded" event in ONE transaction: the job can't be lost or run twice for nothing.
+  const row = await asUser(me, async (tx) => {
+    const [u] = await tx.update(media).set({ status: "processing" })
+      .where(and(eq(media.id, id), sql`${media.status} = 'uploading'`)).returning();
+    if (u) await emit(tx, me, "media.uploaded", { mediaId: id, ownerId: me, kind: u.kind as "image" | "video", purpose: u.purpose as Purpose });
+    return u ?? (await tx.select().from(media).where(eq(media.id, id)))[0]!;
+  });
+  res.status(202).json({ media: dto(row) });
 });
 
 mediaRouter.get("/:id", async (req, res) => {
@@ -58,5 +74,5 @@ mediaRouter.get("/:id", async (req, res) => {
   const id = parse(z.uuid(), req.params.id);
   const [m] = await asUser(me, (tx) => tx.select().from(media).where(eq(media.id, id)));
   if (!m || m.ownerId !== me) throw notFound();
-  res.json({ media: mediaDto({ ...m, file_name: m.fileName, poster_file_name: m.posterFileName, duration_ms: m.durationMs }) });
+  res.json({ media: dto(m) });
 });

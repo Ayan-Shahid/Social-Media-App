@@ -6,10 +6,14 @@ import { anonymous, pool } from "./db/client.js";
 import { attachRealtime, closeRealtime } from "./realtime.js";
 import { redis } from "./infra/redis.js";
 import { closeQueues } from "./infra/queues.js";
+import { ensureBuckets } from "./infra/storage.js";
 
 const app = createApp();
 const server = http.createServer(app);
 attachRealtime(server);
+// Buckets must exist before the first upload; retried in the background if storage is still starting.
+const buckets = () => ensureBuckets().catch((e) => { console.error("storage not ready, retrying:", (e as Error).message); setTimeout(buckets, 3000); });
+buckets();
 
 server.listen(config.PORT, () => console.log(`Glimpse API ${config.INSTANCE_ID} on :${config.PORT}`));
 
