@@ -1,11 +1,38 @@
 # Glimpse: everything runs in Docker. Nothing to install on the host except Docker itself.
 #
-#   cp .env.example .env      # then fill in the passwords
-#   docker compose up -d --build                      # local only: http://localhost:8090
+#   cp .env.example .env                              # then fill in the passwords
+#   docker compose up -d --build                      # http://localhost:8090
 #   docker compose --profile tunnel up -d --build     # also start the Cloudflare tunnel
 #
-# Services start in order: db -> migrate (applies schema changes, then exits) -> api, web -> proxy -> tunnel.
+# Startup order: db + redis -> migrate (applies schema changes, then exits) -> api-1, api-2, worker, web -> proxy -> tunnel.
+# Memory limits keep the whole stack around 2.6 GB so it can share a 2018 MacBook Pro with Veritas.
 name: glimpse
+
+x-api: &api
+  build: ./apps/api
+  image: glimpse-api
+  restart: unless-stopped
+  environment: &api-env
+    # The app role: not a superuser, can't bypass row-level security.
+    DATABASE_URL: postgres://glimpse_app:${APP_DB_PASSWORD}@db:5432/glimpse
+    REDIS_CACHE_URL: redis://redis-cache:6379
+    REDIS_QUEUE_URL: redis://redis-queue:6379
+    APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8090}
+    MEDIA_DIR: /data/media
+    TRUST_PROXY: "1"
+    ADMIN_USERNAMES: ${ADMIN_USERNAMES:-}
+    GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    FANOUT_THRESHOLD: ${FANOUT_THRESHOLD:-10000}
+  volumes:
+    - media:/data/media
+  depends_on:
+    migrate: { condition: service_completed_successfully }
+    redis-cache: { condition: service_healthy }
+    redis-queue: { condition: service_healthy }
+  deploy:
+    resources:
+      limits: { memory: 320m }
 
 services:
   db:
@@ -15,6 +42,7 @@ services:
       POSTGRES_USER: glimpse_owner
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: glimpse
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=100"]
     volumes:
       - db-data:/var/lib/postgresql
     healthcheck:
@@ -22,34 +50,80 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    deploy:
+      resources:
+        limits: { memory: 512m }
 
-  # Runs every pending migration as the database owner, then exits. Safe to run on every deploy.
+  # Cache: may lose data at any time (no persistence). Evicts least-recently-used keys when full.
+  redis-cache:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits: { memory: 192m }
+
+  # Queues + realtime streams: must not lose or evict jobs. Append-only file, no eviction.
+  redis-queue:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - queue-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits: { memory: 320m }
+
+  # Runs every pending migration as the database owner, creates/updates the app and worker roles, then exits.
   migrate:
     build: ./apps/api
+    image: glimpse-api
     command: ["node", "dist/db/migrate.js"]
     restart: "no"
     environment:
       MIGRATION_DATABASE_URL: postgres://glimpse_owner:${POSTGRES_PASSWORD}@db:5432/glimpse
       APP_DB_ROLE: glimpse_app
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}
+      WORKER_DB_PASSWORD: ${WORKER_DB_PASSWORD:?Set WORKER_DB_PASSWORD in .env}
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
 
-  api:
-    build: ./apps/api
-    restart: unless-stopped
+  # Two identical API instances behind Caddy. Any instance can serve any request:
+  # sessions live in Postgres, cache/rate limits/presence in Redis, live events go through Redis streams.
+  api-1:
+    <<: *api
     environment:
-      # The app role: no superuser, can't bypass row-level security.
-      DATABASE_URL: postgres://glimpse_app:${APP_DB_PASSWORD}@db:5432/glimpse
-      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8090}
-      MEDIA_DIR: /data/media
-      TRUST_PROXY: "1"
-    volumes:
-      - media:/data/media
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
+      <<: *api-env
+      INSTANCE_ID: api-1
+  api-2:
+    <<: *api
+    environment:
+      <<: *api-env
+      INSTANCE_ID: api-2
+
+  # Background jobs: media processing, feed fan-out, notifications, maintenance, and the outbox relay.
+  worker:
+    <<: *api
+    command: ["node", "dist/worker.js"]
+    healthcheck:
+      disable: true
+    environment:
+      <<: *api-env
+      INSTANCE_ID: worker-1
+      WORKER_DATABASE_URL: postgres://glimpse_worker:${WORKER_DB_PASSWORD}@db:5432/glimpse
+    deploy:
+      resources:
+        limits: { memory: 640m } # ffmpeg
 
   web:
     build: ./apps/web
@@ -57,10 +131,14 @@ services:
     environment:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8090}
     depends_on:
-      - api
+      - api-1
+      - api-2
+    deploy:
+      resources:
+        limits: { memory: 256m }
 
   proxy:
-    image: caddy:2-alpine
+    image: caddy:2.10-alpine
     restart: unless-stopped
     # Bound to localhost only, on a port that won't clash with Veritas. Change HOST_PORT in .env if needed.
     ports:
@@ -68,11 +146,14 @@ services:
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
-      - api
+      - api-1
+      - api-2
       - web
+    deploy:
+      resources:
+        limits: { memory: 96m }
 
   # Separate Cloudflare tunnel for Glimpse, so it can't affect Veritas's tunnel.
-  # Start with: docker compose --profile tunnel up -d
   tunnel:
     image: cloudflare/cloudflared:latest
     profiles: ["tunnel"]
@@ -85,4 +166,5 @@ services:
 
 volumes:
   db-data:
+  queue-data:
   media:

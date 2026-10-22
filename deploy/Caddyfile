@@ -1,11 +1,25 @@
-# One address for the whole app. Caddy sends API, media and live-chat traffic to the API,
-# and everything else to the web app.
+# One address for the whole app. Caddy load-balances API, media, live-chat and admin traffic
+# across the two API instances, and sends everything else to the web app.
 {
 	admin off
 	servers {
 		# Real visitor IP from Cloudflare, so rate limits apply per person, not per tunnel.
 		trusted_proxies static private_ranges
 		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+}
+
+(api_upstreams) {
+	reverse_proxy api-1:4000 api-2:4000 {
+		# Round-robin. No sticky sessions needed: Socket.IO is websocket-only and all state is in Postgres/Redis.
+		lb_policy round_robin
+		lb_retries 2
+		# Take an instance out of rotation when its health check fails (e.g. during a restart).
+		health_uri /api/health
+		health_interval 5s
+		health_timeout 2s
+		fail_duration 10s
+		header_up X-Forwarded-For {client_ip}
 	}
 }
 
@@ -16,11 +30,16 @@
 	}
 	header -Server
 
-	@api path /api/* /media/* /socket.io/*
+	# Prometheus metrics are for the Docker network only, never the internet.
+	# (handle blocks are tried in order, so this one wins over @api)
+	@internal path /api/internal/*
+	handle @internal {
+		respond 404
+	}
+
+	@api path /api/* /media/* /socket.io/* /admin/*
 	handle @api {
-		reverse_proxy api:4000 {
-			header_up X-Forwarded-For {client_ip}
-		}
+		import api_upstreams
 	}
 	handle {
 		reverse_proxy web:3000 {

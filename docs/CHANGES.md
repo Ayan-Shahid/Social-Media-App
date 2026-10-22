@@ -63,7 +63,7 @@ Session cookies are also `SameSite=Lax` and `httpOnly`.
 
 Likes and follows use PUT and DELETE, which set a state, so repeating them is harmless by design.
 
-### Upload sanitization (`apps/api/src/media/sanitize.ts`)
+### Upload sanitization (`apps/api/src/media/pipeline.ts`)
 
 1. **Size limits** while receiving, and only one file per request.
 2. **Real type check:** the type is read from the file's first bytes, ignoring the name and the type the browser claims. Only JPEG, PNG, WebP, GIF, HEIC, MP4, MOV and WebM pass.
@@ -106,3 +106,23 @@ The look is inspired by film cameras:
 - **Can the server read messages?** No. It only has ciphertext. Only the two browsers hold the keys.
 - **What happens if someone forgets their password?** Login could be reset, but old messages can't be decrypted. That's the cost of real end-to-end encryption.
 - **How do you add a database change?** Edit `schema.ts`, run `npm run db:generate`, commit the SQL file. It's applied on the next deploy.
+
+## v2 (later in 2026): the system-design layer
+
+v1 made the app correct and secure on a single server. v2 makes it behave like a system that can grow. Each choice and its trade-off is in [v2/DECISIONS.md](v2/DECISIONS.md), with numbers in [v2/BENCHMARKS.md](v2/BENCHMARKS.md). In short:
+
+- **Nothing slow happens in a request.** Uploads return `202 Accepted`. A worker validates, re-encodes (WebP sizes, HLS for video) and announces the result over the websocket.
+- **Events can't get lost.** Database changes and their events are written in one transaction (transactional outbox). A relay hands them to BullMQ, and consumers are idempotent (job id = event id), so a retry never double-notifies.
+- **Feed reads are one Redis call.** Posts are pushed into followers' feed lists at write time, except for accounts with huge followings, which are merged in at read time (hybrid fan-out, like Twitter's).
+- **Caching with a plan.** Cache-aside with single-flight locks (no stampedes), negative caching, normalized entries (one `user:{id}` key, never copies inside posts), and write-through counters with drift repair. Per-viewer data ("did I like this?") is never cached.
+- **Two API instances behind Caddy.** No sticky sessions. You can stop either instance under load and requests keep succeeding.
+- **Google sign-in.** OIDC with PKCE, state and nonce. Accounts are only linked when Google says the email is verified.
+- **Group chats stay end-to-end encrypted.** There's a group key per "epoch", sealed for each member, and a new key whenever someone joins or leaves.
+- **Interface.** One WebGL shader paints both the background and the card surfaces. Buttons use grainy mesh-gradient textures, and there are animations for liking, posting ("developing" photos), and new messages.
+
+### More questions you might be asked
+
+- **Why an outbox instead of publishing to the queue after commit?** If the process dies between commit and publish, the event is gone. If you publish before commit and the transaction rolls back, you've announced something that never happened. The outbox makes the event part of the same commit.
+- **Why not fan out every post?** An account with 10 million followers would mean 10 million writes per post. Above a threshold, it's cheaper to merge their recent posts in when a follower reads.
+- **Why two Redis instances?** Different failure rules. A cache may lose anything at any time; a queue must lose nothing. One instance can't be both `allkeys-lru` and `noeviction`.
+- **What happens when someone leaves a group chat?** They knew the current key, so the next message must use a new one. The server flags the group, and the next member to send creates and distributes a fresh key first.

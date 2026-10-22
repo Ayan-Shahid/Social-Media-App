@@ -1,3 +1,4 @@
+import { config } from "../config.js";
 // Cache-aside with stampede protection (DECISIONS.md D4).
 //
 //   read:  cache -> (miss) -> one loader per key -> database -> cache
@@ -20,6 +21,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * one instance hits the database for a cold key; the others wait briefly for the fresh value.
  */
 export async function cached<T>(name: string, key: string, ttlSeconds: number, load: () => Promise<T | null>): Promise<T | null> {
+  if (config.CACHE_BYPASS) return load(); // benchmarks only: measure the same code path without Redis
   const hit = await redis.get(key);
   if (hit !== null) {
     cacheHits.inc({ cache: name });
@@ -64,6 +66,7 @@ export async function cachedMany<T>(name: string, ids: string[], keyOf: (id: str
   loadMany: (ids: string[]) => Promise<Map<string, T>>): Promise<Map<string, T>> {
   const out = new Map<string, T>();
   if (!ids.length) return out;
+  if (config.CACHE_BYPASS) return loadMany(ids);
   const raw = await redis.mget(ids.map(keyOf));
   const missing: string[] = [];
   raw.forEach((v, i) => {

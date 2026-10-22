@@ -109,7 +109,7 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 
 **Why:** reads become one Redis call, and there's no hot-row lock on viral posts. **Drift repair:** if an increment is lost, the 1-hour expiry forces a recount from Postgres.
 
-## D10. Shaders: one canvas for background and cards 🟡
+## D10. Shaders: one canvas for background and cards ✅
 
 **Decision:** one fixed, fullscreen WebGL canvas behind the app. Each frame it receives the screen rectangles of up to 16 visible cards as uniforms. The fragment shader draws the background field everywhere and a quieter "paper" material inside the card rectangles. The cards themselves are transparent.
 - **Why:** one WebGL context, no matter how long the feed is, instead of hitting the browser's limit of about 16.
@@ -128,3 +128,11 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 - **Metrics:** `prom-client` exposes Prometheus metrics at `/api/internal/metrics` (internal network only): request latency, cache hits and misses, queue depth, fan-out size.
 - **Ops page:** an **Ops** page for admins (`ADMIN_USERNAMES`) shows them live during a demo, plus which API instance served the request.
 - **Queues:** Bull Board at `/admin/queues` (admins only).
+
+## D13. Background workers get their own database role (added) ✅
+
+**Decision:** workers connect as `glimpse_worker`, not as the app role. It has `BYPASSRLS`, but only the grants its jobs need (migration `0005_v2_security`): read the social tables (users, follows, posts, media, mentions, stories, conversation membership, outbox); insert `notifications`; update only the processing columns of `media` and the delivery columns of `outbox`; delete expired stories, abandoned media and old outbox rows. It has no grant at all on `messages`, `group_keys`, `key_backups`, `user_credentials` or `sessions`, so even a compromised worker can't read ciphertext, key backups or log-in data.
+
+**Why:** a worker does system work across many users (fan-out writes to every follower's feed, a notification goes to someone other than the actor), so it can't act "as one user" under RLS. Giving it the owner role would mean a bug in a media job could drop tables. A separate role keeps RLS absolute for every request path, and makes the exception narrow, named and reviewable in one migration (`0005_v2_security`).
+
+**Trade-off:** one more password in `.env` (`WORKER_DB_PASSWORD`), and grants must be updated when a job needs a new table. A forgotten grant fails loudly ("permission denied"), which is the right way to fail.

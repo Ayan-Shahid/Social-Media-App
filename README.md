@@ -1,43 +1,67 @@
 # Glimpse
 
-A photo and video sharing app with end-to-end encrypted direct messages.
+A photo and video sharing app: feed, stories, shorts, reposts, saved collections, mentions and hashtags, notifications, and end-to-end encrypted direct and group messages.
 
-Originally built in 2022 with the MERN stack (kept in [`legacy/2022`](legacy/2022) for comparison), rebuilt in 2026 with Postgres, row-level security, and a security-first API. See [docs/CHANGES.md](docs/CHANGES.md) for what changed and why, and [docs/v2/ROADMAP.md](docs/v2/ROADMAP.md) for what comes next.
+Originally built in 2022 with the MERN stack (kept in [`legacy/2022`](legacy/2022) for comparison), then rebuilt in 2026 in two steps:
+- **v1:** Postgres with row-level security and a security-first API ([docs/CHANGES.md](docs/CHANGES.md)).
+- **v2:** the system-design layer. Redis caching, queues and background workers, a fan-out feed, two load-balanced API instances, and Google sign-in.
+
+The v2 decisions and their trade-offs are in [docs/v2/DECISIONS.md](docs/v2/DECISIONS.md), with measurements in [docs/v2/BENCHMARKS.md](docs/v2/BENCHMARKS.md).
 
 ## Features
 
-- Sign up and log in (Argon2id passwords, httpOnly session cookies)
-- Post photos and short videos with captions, a feed of people you follow, explore, profiles
-- Follow, like, comment, delete your own posts and comments
-- End-to-end encrypted 1:1 messages with live delivery, online status and a safety code
-- Edit profile: name, bio, photo
+- **Posts:** photo carousels (up to 10), captions with @mentions and #hashtags, likes, comments, reposts, saves into collections
+- **Shorts:** vertical videos, transcoded to adaptive HLS (360p/720p)
+- **Stories:** expire after 24 hours, with seen rings and a viewer list for the author
+- **Feeds:** home feed of people you follow (and their reposts), explore, a page per hashtag, trending tags
+- **Notifications:** grouped ("bea and 3 others liked your post"), delivered live
+- **Messages:** end-to-end encrypted 1:1 and group chats (up to 32), with live delivery, online status and safety codes
+- **Accounts:** email and password, or Continue with Google
+- **Ops page:** live cache hit rates, queue depths, and which API instance answered (admins only)
 
 ## Stack
 
 | Part | Tech |
 |---|---|
-| Web | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, TanStack Query |
+| Web | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, TanStack Query, WebGL shader, hls.js |
 | API | Node.js 24, Express 5, TypeScript, Socket.IO, Zod |
 | Database | PostgreSQL 18, Drizzle ORM and migrations, row-level security |
-| Media | sharp (images), ffmpeg (video), file-type (magic-byte detection) |
+| Cache, queues | Redis 8 ×2 (cache: LRU, no persistence; queues: AOF, no eviction), BullMQ, Redis Streams |
+| Media | sharp (images → WebP), ffmpeg (video → HLS), file-type (magic-byte detection) |
 | Encryption | libsodium (X25519, XSalsa20-Poly1305, Argon2id) |
-| Deploy | Docker Compose, Caddy, Cloudflare Tunnel |
+| Deploy | Docker Compose, Caddy (load balancer), Cloudflare Tunnel |
 
 ```
-browser ──▶ Cloudflare Tunnel ──▶ Caddy ──┬─▶ web  (Next.js pages)
-                                          └─▶ api  (/api, /media, /socket.io) ──▶ Postgres
+                                            ┌─▶ web (Next.js)
+browser ─▶ Cloudflare Tunnel ─▶ Caddy ──────┤
+                                            └─▶ api-1, api-2 (round-robin, health-checked)
+                                                   │  ▲ cache / rate limits / presence ── redis-cache
+                                                   │  │ live events (Streams) ─────────── redis-queue
+                                                   ▼  │
+                                                Postgres ── outbox ─▶ relay ─▶ BullMQ ─▶ worker
+                                                                               (media, fan-out,
+                                                                                notifications, cleanup)
 ```
+
+How a post travels: the API writes the post **and** an outbox event in one transaction, and returns. The relay moves the event to a queue. The worker pushes the post id into each follower's feed in Redis (or skips accounts with huge followings, which are merged in at read time). Then it sends notifications, which reach the browser over the websocket of whichever API instance the recipient is connected to.
 
 ## Run it with Docker (recommended)
 
 Only Docker Desktop is needed on the host. No Node, Postgres or ffmpeg to install.
 
 ```bash
-cp .env.example .env          # set the two passwords (letters and numbers only)
+cp .env.example .env          # set the three passwords (letters and numbers only)
 docker compose up -d --build  # first build takes a few minutes
 ```
 
 Open http://localhost:8090. The `migrate` service applies the database schema automatically and exits.
+
+The whole stack is limited to about 2.6 GB of memory (see `deploy.resources` in `docker-compose.yml`), so it can run next to other apps.
+
+**Optional settings in `.env`:**
+- `ADMIN_USERNAMES=yourname`: shows the **Ops** page and the queue dashboard (`/admin/queues`) to that account.
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: turn on Continue with Google. In Google Cloud Console, create an OAuth client (Web application) with the redirect URI `<APP_ORIGIN>/api/auth/google/callback`.
+- `FANOUT_THRESHOLD=3`: makes the "celebrity" pull path kick in for small demos.
 
 ### Put it online with a Cloudflare Tunnel
 
@@ -53,7 +77,9 @@ Glimpse gets its own tunnel, so it never touches another app's tunnel.
 ### Useful commands
 
 ```bash
-docker compose logs -f api            # API logs
+docker compose logs -f api-1 api-2    # API logs
+docker compose logs -f worker         # background jobs
+docker compose stop api-1             # watch Caddy route everything to api-2
 docker compose ps                     # what's running
 docker compose down                   # stop (data is kept in Docker volumes)
 docker compose up -d --build          # update after pulling new code (runs new migrations)
@@ -61,19 +87,24 @@ docker compose up -d --build          # update after pulling new code (runs new 
 
 ## Develop without Docker
 
-Needs Node 22+, Postgres 16+ and ffmpeg.
+Needs Node 22+, Postgres 16+, Redis (two instances on 6380 and 6381) and ffmpeg.
 
 ```bash
 # API
 cd apps/api && npm install
-MIGRATION_DATABASE_URL=postgres://postgres@localhost/glimpse APP_DB_PASSWORD=devpass npm run migrate:dev
+MIGRATION_DATABASE_URL=postgres://postgres@localhost/glimpse APP_DB_PASSWORD=devpass WORKER_DB_PASSWORD=workerpass npm run migrate:dev
 DATABASE_URL=postgres://glimpse_app:devpass@localhost/glimpse APP_ORIGIN=http://localhost:3000 npm run dev
+# Worker (another terminal)
+WORKER_DATABASE_URL=postgres://glimpse_worker:workerpass@localhost/glimpse DATABASE_URL=... npx tsx src/worker.ts
 
 # Web (another terminal)
 cd apps/web && npm install && npm run dev     # http://localhost:3000
 ```
 
-Tests (API, against a real Postgres): `cd apps/api && npm test`. They cover CSRF, idempotency, upload attacks, row-level security and encrypted messaging.
+Tests (API, against real Postgres and Redis): `cd apps/api && npm test`. The 63 tests cover:
+- **Security:** CSRF, idempotency, upload attacks, row-level security, encrypted messaging.
+- **System behaviour:** outbox reliability, idempotent consumers, fan-out push and pull, cache stampedes, counter drift, and cross-instance delivery with two real API processes.
+- **Features**, and **Google sign-in** against a mock identity provider.
 
 ## Database changes
 

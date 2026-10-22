@@ -21,7 +21,7 @@
 }
 
 @layer base {
-  html { -webkit-text-size-adjust: 100%; }
+  html { -webkit-text-size-adjust: 100%; background: var(--color-fog); }
   /* The shader paints the wall; this image is the fallback until (or if) WebGL starts. */
   body { @apply text-ink font-sans antialiased; background: var(--color-fog) url("/textures/bg-static.webp") center / cover fixed; }
   html.gl-on body { background: transparent; }

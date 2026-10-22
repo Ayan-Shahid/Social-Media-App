@@ -30,6 +30,8 @@ const schema = z.object({
   FEED_MAX_ITEMS: z.coerce.number().default(800),
   INSTANCE_ID: z.string().default(process.env.HOSTNAME ?? "api-local"),
   ADMIN_USERNAMES: z.string().default(""),
+  // Benchmarks only (docs/v2/BENCHMARKS.md): skip the read-through caches to measure their effect.
+  CACHE_BYPASS: z.stringbool().default(false),
   // Sign in with Google (OIDC). Leave the client id empty to hide the button.
   GOOGLE_CLIENT_ID: z.string().default(""),
   GOOGLE_CLIENT_SECRET: z.string().default(""),

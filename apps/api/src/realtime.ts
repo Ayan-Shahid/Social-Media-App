@@ -69,12 +69,11 @@ export function attachRealtime(server: http.Server) {
   io.on("connection", async (socket) => {
     const userId: string = socket.data.userId;
     socket.join(`user:${userId}`);
-    socket.emit("hello", { instance: config.INSTANCE_ID });
+    // Count the connection synchronously, so a disconnect can never be processed before it.
     const n = (local.get(userId) ?? 0) + 1;
     local.set(userId, n);
-    await redis.zadd(keys.presence, Date.now(), userId).catch(() => {});
-    if (n === 1) partnersOf(userId).then((p) => publish(p, "presence", { userId, online: true })).catch(() => {});
-
+    // Handlers are registered BEFORE any await: an event that arrives while we're awaiting would
+    // otherwise find no listener and be dropped (a presence query would never get its reply).
     socket.on("presence:query", async (ids: unknown, ack: unknown) => {
       if (typeof ack !== "function" || !Array.isArray(ids)) return;
       const list = ids.filter((x): x is string => typeof x === "string" && /^[0-9a-f-]{36}$/.test(x)).slice(0, 200);
@@ -89,6 +88,11 @@ export function attachRealtime(server: http.Server) {
       await redis.zadd(keys.presence, Date.now() - ONLINE_WINDOW_MS - 1000, userId).catch(() => {});
       partnersOf(userId).then((p) => publish(p, "presence", { userId, online: false })).catch(() => {});
     });
+
+    await redis.zadd(keys.presence, Date.now(), userId).catch(() => {});
+    if (n === 1) partnersOf(userId).then((p) => publish(p, "presence", { userId, online: true })).catch(() => {});
+    // "hello" means ready: handlers are in place and this user already counts as online everywhere.
+    socket.emit("hello", { instance: config.INSTANCE_ID });
   });
 
   // One heartbeat per instance for all its connected users.
