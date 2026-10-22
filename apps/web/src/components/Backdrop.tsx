@@ -1,12 +1,13 @@
 "use client";
-// The app's background (DECISIONS.md D10): pre-rendered WebP images of the social-icon shader, light
-// and dark, wide and tall. No live WebGL: zero GPU cost, nothing to fall out of sync while scrolling.
+// The app's background (DECISIONS.md D10): the live social-icon shader on one WebGL canvas, with the
+// pre-rendered WebP of the same shader underneath (shown before the first frame, or with no WebGL).
 // Cards draw their own grid-matrix paper in CSS, so they scroll with their content.
 //
 // Reactions stay: pulse() floats a few hearts or chat bubbles up from a point on screen (a like, a
 // new message, someone going live). Plain DOM + CSS animation, removed when finished.
 import { useEffect, useState } from "react";
 import { HeartIcon, ChatIcon } from "./icons";
+import { BackgroundShader } from "./BackgroundShader";
 
 export type PulseKind = "like" | "message" | "live";
 
@@ -40,6 +41,7 @@ export function Backdrop() {
   return (
     <>
       <div aria-hidden className="backdrop" />
+      <BackgroundShader />
       <div aria-hidden className="pointer-events-none fixed inset-0 z-[60] overflow-hidden">
         {parts.map((p) => (
           <span key={p.id} className="float-up absolute" style={{ left: p.x, top: p.y, ["--dx" as string]: `${p.dx}px`, ["--rot" as string]: `${p.rot}deg`, animationDelay: `${p.delay}ms` }}>

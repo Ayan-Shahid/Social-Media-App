@@ -20,14 +20,14 @@ The v2 decisions and their trade-offs are in [docs/v2/DECISIONS.md](docs/v2/DECI
 - **Privacy:** private accounts with follow requests, remove a follower, block, mute
 - **Accounts:** email and password, or Continue with Google
 - **Ops page:** live cache hit rates, queue depths, and which API instance answered (admins only)
-- **Look:** light and dark themes (follows the system, or pick one), a pre-rendered shader background of social icons, grid-paper cards, grainy mesh-gradient buttons, hearts that float up when you like, a 3D film camera on the landing and sign-in pages
+- **Look:** light and dark themes (follows the system, or pick one), a live WebGL background of drifting social icons that ripples when you like or get a message (pre-rendered WebP fallback), grid-paper cards, grainy mesh-gradient buttons, hearts that float up when you like, a 3D film camera on the landing and sign-in pages
 - **Landing page** at `/welcome` with live counts from this server (nothing made up)
 
 ## Stack
 
 | Part | Tech |
 |---|---|
-| Web | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, TanStack Query, hls.js, three.js (3D camera) |
+| Web | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, TanStack Query, WebGL background shader, hls.js, three.js (3D camera) |
 | API | Node.js 24, Express 5, TypeScript, Socket.IO, Zod |
 | Database | PostgreSQL 18, Drizzle ORM and migrations, row-level security |
 | Cache, queues | Redis 8 ×2 (cache: LRU, no persistence; queues: AOF, no eviction), BullMQ, Redis Streams |

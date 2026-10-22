@@ -109,16 +109,17 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 
 **Why:** reads become one Redis call, and there's no hot-row lock on viral posts. **Drift repair:** if an increment is lost, the 1-hour expiry forces a recount from Postgres.
 
-## D10. Background: a pre-rendered shader, grid-matrix cards, and a 3D camera ✅
+## D10. Background: a live shader for the wall only, grid-matrix cards, and a 3D camera ✅
 
-**Changed after review.** The first version ran one live WebGL canvas behind the app and drew the cards' paper inside it from their screen rectangles. In use, that lagged: while scrolling, the card content moved a frame before the shader caught up, so contents and their backgrounds visibly separated. It also cost GPU time on every frame for a mostly static picture.
+**History.** The first version ran one WebGL canvas that drew the wall *and* the cards' paper (from their screen rectangles). While scrolling, card content moved a frame before the shader caught up, so contents and their backgrounds visibly separated. The fix keeps the canvas but takes the cards out of it.
 
 **Decision now:**
-- **Wall:** the same shader (three parallax layers of line-drawn hearts, chat bubbles, @, #, cameras and play buttons over two soft glows, with film grain) is rendered **offline** to high-quality WebP: light and dark, wide (2880×1800) and tall (1290×2796), ~110–300 KB each. `scripts/backdrop-shader.html` is the shader and `scripts/render-backdrop.mjs` re-renders it. A fixed layer shows the right one by theme and orientation (not `background-attachment: fixed`, which iOS ignores). Zero GPU cost, nothing to fall out of sync.
-- **Cards:** CSS "engineering paper": a fine grid matrix (minor line every 12px, major every 48px), drawn by the card itself, so it scrolls with its content by definition. Theme-aware through tokens.
-- **Buttons:** grainy mesh-gradient WebP textures (`scripts/generate-textures.mjs`): 1200×300 sources, sized to 170%×320% of each button so even small buttons span several colours. Hover slides the window across the mesh. Flat 1px borders, no bevels or 3D. Separate textures for dark mode.
-- **Reactions** (a like, a new message, someone going live): a DOM layer floats a few hearts or bubbles up from the point, with CSS animations, removed when done. Off with reduced motion.
-- **3D camera** (auth and landing pages): a film rangefinder modelled in code with three.js, with no downloaded model. It has satin metal plates, pebbled leatherette from a canvas bump map, a knurled lens with an iridescent coated element, and image-based lighting from three's RoomEnvironment. It follows the pointer, floats, and fires its shutter every few seconds; the page answers with a flash and a print with today's date stamp developing. Loaded only on those pages, paused off-screen, drawn once with reduced motion.
+- **Wall:** one fixed WebGL canvas (`BackgroundShader.tsx`). It draws three parallax layers of line-drawn hearts, chat bubbles, @, #, cameras and play buttons, drifting upward over two soft glows, with film grain. It's a full-screen backdrop that doesn't depend on page content, so there's nothing for it to lag behind. A like or a new message sends a ripple from that point, and the icons it passes light up (up to 8 at once, as a uniform array). Light/dark cross-fade is time-based (~0.4 s). Device pixel ratio is capped at 1.5, and it pauses when the tab is hidden.
+- **Fallback:** the same shader pre-rendered to WebP (light/dark × wide/tall) sits underneath. It shows before the first frame, with no WebGL, or if the context is lost. `scripts/backdrop-shader.html` and `scripts/render-backdrop.mjs` regenerate it.
+- **Cards:** CSS "engineering paper": a fine grid matrix (minor line every 12px, major every 48px), drawn by the card itself, so it scrolls with its content by definition.
+- **Buttons:** grainy mesh-gradient WebP textures (`scripts/generate-textures.mjs`), sized to 170%×320% of each button so even small ones span several colours. Hover slides the window across the mesh. Flat 1px borders, no bevels.
+- **Floating reactions:** a few hearts or bubbles rise from where you liked (DOM + CSS animation), alongside the shader ripple.
+- **3D camera** (auth and landing pages): a film rangefinder modelled in code with three.js, loaded only on those pages and paused off-screen.
 
 **Dark mode** follows the system by default; Settings or the sidebar can pin Light or Dark for this device. It's applied by an inline script before first paint (with the CSP nonce), so there's no flash, and synced to other open tabs through the `storage` event.
 
