@@ -12,6 +12,7 @@ import { Avatar, Empty, PageTitle, Spinner } from "@/components/ui";
 const VERB: Record<Notification["type"], string> = {
   like: "liked your post", comment: "commented:", follow: "started following you", mention: "mentioned you", repost: "reposted your post",
   follow_request: "asked to follow you", follow_accept: "accepted your follow request",
+  live: "started a live video",
 };
 
 /** Pending requests to a private account, answered right here. */
@@ -66,6 +67,7 @@ export default function NotificationsPage() {
                   {others > 0 && <> and {others} other{others > 1 ? "s" : ""}</>} {VERB[n.type]}{n.comment && <span className="text-graphite"> &ldquo;{n.comment.slice(0, 80)}&rdquo;</span>}
                   <span className="ml-1.5 text-graphite">{timeAgo(n.createdAt)}</span>
                 </p>
+                {n.live?.active && <Link href={`/live/${n.live.id}`} className="shrink-0"><span className="live-badge rounded px-2 py-1 text-[12px] font-bold text-white">Watch</span></Link>}
                 {n.post && (
                   <Link href={`/p/${n.post.id}`} className="h-11 w-11 shrink-0 overflow-hidden rounded bg-fog-deep">
                     {/* eslint-disable-next-line @next/next/no-img-element */}

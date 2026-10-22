@@ -29,14 +29,15 @@ export function proxy(request: NextRequest) {
   res.headers.set("Content-Security-Policy", csp);
   res.headers.set("X-Content-Type-Options", "nosniff");
   res.headers.set("Referrer-Policy", "same-origin");
-  res.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  // Camera and microphone for this site only (live video); never for embedded third parties.
+  res.headers.set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()");
   if (https) res.headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   return res;
 }
 
 export const config = {
   matcher: [{
-    source: "/((?!api|media|uploads|live|socket.io|_next/static|_next/image|favicon.ico|icon.svg).*)",
+    source: "/((?!api|media|uploads|stream|socket.io|_next/static|_next/image|favicon.ico|icon.svg).*)",
     missing: [{ type: "header", key: "next-router-prefetch" }, { type: "header", key: "purpose", value: "prefetch" }],
   }],
 };

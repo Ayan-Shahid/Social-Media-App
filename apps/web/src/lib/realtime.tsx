@@ -31,7 +31,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       qc.setQueryData<EncryptedMessage[]>(["messages", m.conversationId], (old) => (old && !old.some((x) => x.id === m.id) ? [...old, m] : old));
       qc.invalidateQueries({ queryKey: ["conversations"] });
     });
-    s.on("notification:new", () => {
+    s.on("notification:new", (n: { type?: string }) => {
+      if (n?.type === "live") qc.invalidateQueries({ queryKey: ["live-now"] });
       qc.invalidateQueries({ queryKey: ["unread"] });
       qc.invalidateQueries({ queryKey: ["notifications"] });
     });

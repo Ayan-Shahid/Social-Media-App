@@ -24,9 +24,14 @@ export interface EncryptedMessage { id: string; conversationId: string; senderId
 export interface KeyBackup { ciphertext: string; nonce: string; salt: string; opsLimit: number; memLimit: number; kind?: "password" | "passcode" }
 export interface Page<T> { posts: T[]; nextCursor: string | null }
 export interface Notification {
-  type: "like" | "comment" | "follow" | "mention" | "repost" | "follow_request" | "follow_accept"; total: number; unread: boolean; createdAt: string;
-  actors: User[]; post: { id: string; thumbUrl: string | null } | null; comment: string | null;
+  type: "like" | "comment" | "follow" | "mention" | "repost" | "follow_request" | "follow_accept" | "live"; total: number; unread: boolean; createdAt: string;
+  actors: User[]; post: { id: string; thumbUrl: string | null } | null; comment: string | null; live?: { id: string; active: boolean } | null;
 }
 export interface Story { id: string; createdAt: string; expiresAt: string; seen: boolean; media: Media; views?: number }
 export interface TrayItem { user: User; latest: string; allSeen: boolean }
 export interface Collection { id: string; name: string; count: number; coverUrl: string | null }
+export interface LiveStream {
+  id: string; host: User; title: string; status: "starting" | "live" | "ended";
+  startedAt: string | null; endedAt: string | null; viewers: number; peakViewers: number;
+}
+export interface LiveComment { id: string; user: User; text: string; at: string }

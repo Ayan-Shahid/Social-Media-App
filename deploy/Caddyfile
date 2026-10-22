@@ -67,6 +67,16 @@
 		respond 405
 	}
 
+	# Live video (DECISIONS.md D16): WebSocket ingest from the broadcaster, HLS out to viewers.
+	# One live service: a stream lives in the process that ingests it.
+	@live path /stream/*
+	handle @live {
+		reverse_proxy live:4100 {
+			header_up X-Forwarded-For {client_ip}
+			flush_interval -1
+		}
+	}
+
 	@api path /api/* /socket.io/* /admin/*
 	handle @api {
 		import api_upstreams

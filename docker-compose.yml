@@ -5,7 +5,7 @@
 #   docker compose --profile tunnel up -d --build     # also start the Cloudflare tunnel
 #
 # Startup order: db + redis + storage -> migrate (applies schema changes, then exits) -> api-1, api-2, worker, web -> proxy -> tunnel.
-# Memory limits keep the whole stack around 3 GB so it can share a 2018 MacBook Pro with Veritas.
+# Memory limits keep the whole stack around 3.8 GB so it can share a 2018 MacBook Pro with Veritas.
 name: glimpse
 
 x-api: &api
@@ -153,6 +153,26 @@ services:
     tmpfs:
       - /tmp:size=512m # video transcoding scratch space (originals are deleted after processing)
 
+  # Live video: browser -> WebSocket -> ffmpeg -> HLS (DECISIONS.md D16). Stateful by nature (a stream
+  # lives in the process ingesting it), so it's its own service and isn't load-balanced.
+  live:
+    <<: *api
+    command: ["node", "dist/live.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/stream/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+    environment:
+      <<: *api-env
+      INSTANCE_ID: live-1
+      LIVE_DIR: /tmp/live
+      MAX_LIVE_MINUTES: ${MAX_LIVE_MINUTES:-60}
+    tmpfs:
+      - /tmp/live:size=256m # rolling HLS window only; deleted when a stream ends
+    deploy:
+      resources:
+        limits: { memory: 768m } # one 720p ffmpeg encode per active stream
+
   web:
     build: ./apps/web
     restart: unless-stopped
@@ -178,6 +198,7 @@ services:
       - api-2
       - web
       - storage
+      - live
     deploy:
       resources:
         limits: { memory: 96m }

@@ -7,7 +7,7 @@ import { api, ApiError, newIdempotencyKey } from "@/lib/api";
 import { type Envelope, openDirect, REACTIONS, sendEnvelope } from "@/lib/chat";
 import { timeAgo } from "@/lib/dates";
 import { useSession } from "@/lib/session";
-import type { Story, TrayItem, User } from "@/lib/types";
+import type { LiveStream, Story, TrayItem, User } from "@/lib/types";
 import { Avatar, Spinner } from "./ui";
 import { Photo, Video } from "./Media";
 import { CloseIcon } from "./icons";
@@ -17,6 +17,8 @@ export function StoriesTray() {
   const { me } = useSession();
   const qc = useQueryClient();
   const tray = useQuery({ queryKey: ["stories-tray"], queryFn: () => api<{ tray: TrayItem[] }>("/api/stories/tray").then((r) => r.tray), refetchInterval: 60_000 });
+  // Who's live right now comes first, like Instagram. Refreshed often, and on "x started a live video".
+  const live = useQuery({ queryKey: ["live-now"], queryFn: () => api<{ streams: LiveStream[] }>("/api/live").then((r) => r.streams), refetchInterval: 20_000 });
   const [open, setOpen] = useState<number | null>(null);
   const [posting, setPosting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -50,6 +52,15 @@ export function StoriesTray() {
           </span>
           <span className="w-full truncate text-center text-[12px] text-graphite">Your story</span>
         </button>
+        {(live.data ?? []).filter((l) => l.host.id !== me.id).map((l) => (
+          <Link key={l.id} href={`/live/${l.id}`} className="flex w-[72px] shrink-0 flex-col items-center gap-1.5">
+            <span className="relative">
+              <span className="live-ring block rounded-full p-[3px]"><span className="block rounded-full bg-paper p-[2px]"><Avatar user={l.host} size={54} /></span></span>
+              <span className="live-badge absolute -bottom-1 left-1/2 -translate-x-1/2 rounded px-1.5 text-[10px] leading-4 font-bold text-white">LIVE</span>
+            </span>
+            <span className="w-full truncate text-center text-[12px]">{l.host.username}</span>
+          </Link>
+        ))}
         <input ref={file} type="file" accept={ACCEPT.story} className="sr-only" onChange={(e) => { const f = e.target.files?.[0]; if (f) postStory(f); e.target.value = ""; }} />
         {others.map((t) => (
           <button key={t.user.id} onClick={() => setOpen(order.indexOf(t))} className="flex w-[72px] shrink-0 flex-col items-center gap-1.5">

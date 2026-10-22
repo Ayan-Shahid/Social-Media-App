@@ -106,6 +106,13 @@
 .reaction-pop { animation: reaction-pop 520ms cubic-bezier(.3,1.5,.5,1) both; display: inline-block; }
 @keyframes emoji-float { 0% { transform: translateY(0) scale(.6); opacity: 0; } 15% { opacity: 1; transform: translateY(-20px) scale(1.15); } 100% { transform: translateY(-320px) scale(1.4) rotate(12deg); opacity: 0; } }
 .emoji-float { animation: emoji-float 1.4s cubic-bezier(.2,.7,.3,1) forwards; }
+@keyframes heart-float { 0% { transform: translateY(0) scale(.4); opacity: 0; } 12% { opacity: 1; transform: translateY(-16px) scale(1.1); } 50% { transform: translateY(-140px) translateX(-10px) scale(1); } 100% { transform: translateY(-280px) translateX(8px) scale(.9); opacity: 0; } }
+.heart-float { animation: heart-float 2.2s cubic-bezier(.25,.8,.3,1) forwards; }
+.live-ring { background: conic-gradient(from 0deg, #ff2d6f, #f2691b, #ff2d6f); animation: spin 3s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.live-ring > span { animation: spin 3s linear infinite reverse; }
+.live-badge { background: linear-gradient(135deg, #ff2d6f, #f2691b); animation: live-pulse 2s ease-in-out infinite; }
+@keyframes live-pulse { 50% { box-shadow: 0 0 0 4px rgb(255 45 111 / 0.25); } }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 .rise { animation: rise 360ms cubic-bezier(.2,.8,.2,1) both; }
 @keyframes story-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }

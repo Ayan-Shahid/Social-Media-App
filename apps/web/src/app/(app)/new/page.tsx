@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -72,6 +73,7 @@ function NewPost() {
             <button key={k} onClick={() => { if (k !== kind) { up.reset(); setStates({}); setKind(k); } }}
               className={clsx("rounded-full px-3 py-1 transition", kind === k ? "bg-ink text-white" : "text-graphite")}>{k === "post" ? "Post" : "Short"}</button>
           ))}
+          <Link href="/live/new" className="rounded-full px-3 py-1 text-graphite transition hover:text-ink">Live</Link>
         </div>
       }>New {kind}</PageTitle>
       <div data-surface className="rounded-2xl p-4">

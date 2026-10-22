@@ -1,12 +1,12 @@
 // Simple line icons, drawn for Glimpse.
-type P = { className?: string; filled?: boolean };
+type P = { className?: string; filled?: boolean; style?: React.CSSProperties };
 const base = { fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, viewBox: "0 0 24 24", "aria-hidden": true };
 
 export const HomeIcon = ({ className }: P) => <svg {...base} className={className}><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" /></svg>;
 export const SearchIcon = ({ className }: P) => <svg {...base} className={className}><circle cx="11" cy="11" r="6.5" /><path d="m20 20-4.2-4.2" /></svg>;
 export const PlusIcon = ({ className }: P) => <svg {...base} className={className}><rect x="3.5" y="3.5" width="17" height="17" rx="4" /><path d="M12 8v8M8 12h8" /></svg>;
 export const ChatIcon = ({ className }: P) => <svg {...base} className={className}><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z" /></svg>;
-export const HeartIcon = ({ className, filled }: P) => <svg {...base} fill={filled ? "currentColor" : "none"} className={className}><path d="M12 20s-7.5-4.4-7.5-10A4.3 4.3 0 0 1 12 7.4 4.3 4.3 0 0 1 19.5 10c0 5.6-7.5 10-7.5 10z" /></svg>;
+export const HeartIcon = ({ className, filled, style }: P) => <svg {...base} fill={filled ? "currentColor" : "none"} className={className} style={style}><path d="M12 20s-7.5-4.4-7.5-10A4.3 4.3 0 0 1 12 7.4 4.3 4.3 0 0 1 19.5 10c0 5.6-7.5 10-7.5 10z" /></svg>;
 export const CommentIcon = ({ className }: P) => <svg {...base} className={className}><path d="M20 11.5a7.5 7.5 0 0 1-10.8 6.7L4.5 19.5l1.3-4.2A7.5 7.5 0 1 1 20 11.5z" /></svg>;
 export const LockIcon = ({ className }: P) => <svg {...base} className={className}><rect x="5" y="10.5" width="14" height="9.5" rx="2" /><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" /></svg>;
 export const SendIcon = ({ className }: P) => <svg {...base} className={className}><path d="M20.5 3.5 10 14M20.5 3.5 14 20.5l-4-6.5-6.5-4z" /></svg>;
@@ -26,3 +26,5 @@ export const GoogleIcon = ({ className }: P) => (
     <path fill="#EA4335" d="M12 10.2v3.9h5.4c-.2 1.3-1.6 3.8-5.4 3.8-3.2 0-5.9-2.7-5.9-6s2.7-6 5.9-6c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.8 3.3 14.6 2.3 12 2.3 6.6 2.3 2.3 6.6 2.3 12s4.3 9.7 9.7 9.7c5.6 0 9.3-3.9 9.3-9.5 0-.6-.1-1.1-.2-1.6H12z" />
   </svg>
 );
+export const LiveIcon = ({ className }: P) => <svg {...base} className={className}><circle cx="12" cy="12" r="2.2" fill="currentColor" /><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14" /></svg>;
+export const CameraFlipIcon = ({ className }: P) => <svg {...base} className={className}><path d="M4 8h3l1.5-2h7L17 8h3v11H4z" /><path d="M9.5 13.5a2.5 2.5 0 0 0 4.6 1.3M14.5 12.5A2.5 2.5 0 0 0 9.9 11.2" /><path d="m14.6 15.6.1-1.6-1.6.1M9.4 10.4l-.1 1.6 1.6-.1" /></svg>;
