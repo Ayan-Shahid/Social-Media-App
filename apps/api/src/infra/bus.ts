@@ -6,6 +6,7 @@
 // the last entry it saw instead of silently missing events.
 import { redis, keys, newBlockingClient } from "./redis.js";
 
+/** `to`: user ids, or "#room" for a Socket.IO room (e.g. "#live:<id>" for everyone watching a stream). */
 export interface BusEvent { to: string[]; event: string; payload: unknown }
 
 export async function publish(to: string[], event: string, payload: unknown) {

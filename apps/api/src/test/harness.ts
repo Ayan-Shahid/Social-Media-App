@@ -47,6 +47,8 @@ export class Client {
   csrf = "";
   keys = sodium.crypto_box_keypair();
   user: { id: string; username: string } | null = null;
+  /** Cookie header for non-HTTP-agent clients (WebSocket, Socket.IO). Set on register. */
+  cookies = "";
   ip = `10.0.0.${ipCounter++}`;
   constructor(public app: Express) { this.agent = request.agent(app); }
   async init() { this.grabCsrf(await this.agent.get("/api/auth/csrf").set("X-Forwarded-For", this.ip)); return this; }
@@ -71,6 +73,7 @@ export class Client {
     }));
     expect(r.status, JSON.stringify(r.body)).toBe(201);
     this.user = r.body.user;
+    this.cookies = ([] as string[]).concat(r.headers["set-cookie"] ?? []).map((c) => c.split(";")[0]).join("; ");
     return this;
   }
   /**

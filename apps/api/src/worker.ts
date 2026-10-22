@@ -55,6 +55,7 @@ async function scheduleMaintenance() {
   await q.upsertJobScheduler("stories.expire", { every: 10 * 60_000 }, { name: "stories.expire" });
   await q.upsertJobScheduler("outbox.purge", { every: 60 * 60_000 }, { name: "outbox.purge" });
   await q.upsertJobScheduler("media.abandoned", { every: 60 * 60_000 }, { name: "media.abandoned" });
+  await q.upsertJobScheduler("live.reap", { every: 60_000 }, { name: "live.reap" });
 }
 
 const isMain = process.argv[1]?.endsWith("worker.js") || process.argv[1]?.endsWith("worker.ts");

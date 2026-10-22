@@ -5,7 +5,7 @@ import { workerPool } from "../db/worker-pool.js";
 import { publish } from "../infra/bus.js";
 import type { EventMap } from "../infra/outbox.js";
 
-type N = { recipient: string; actor: string; type: "like" | "comment" | "follow" | "mention" | "repost" | "follow_request" | "follow_accept"; postId?: string; commentId?: string };
+type N = { recipient: string; actor: string; type: "like" | "comment" | "follow" | "mention" | "repost" | "follow_request" | "follow_accept" | "live"; postId?: string; commentId?: string; liveId?: string };
 
 function build(name: string, d: Record<string, unknown>): N[] {
   const out: N[] = [];
@@ -35,8 +35,16 @@ function build(name: string, d: Record<string, unknown>): N[] {
   return out.filter((n) => n.recipient !== n.actor);
 }
 
+/** "x started a live video" goes to every follower (in batches; a big account is one job, not one per follower). */
+async function liveAudience(e: EventMap["live.started"]): Promise<N[]> {
+  const r = await workerPool().query<{ follower_id: string }>(
+    `select f.follower_id from follows f where f.followee_id = $1
+       and not exists (select 1 from mutes m where m.muter_id = f.follower_id and m.muted_id = $1) limit 5000`, [e.hostId]);
+  return r.rows.map((x) => ({ recipient: x.follower_id, actor: e.hostId, type: "live" as const, liveId: e.liveId }));
+}
+
 export async function notifyJob(job: Job<{ eventId: string } & Record<string, unknown>>) {
-  const list = build(job.name, job.data);
+  const list = job.name === "live.started" ? await liveAudience(job.data as unknown as EventMap["live.started"]) : build(job.name, job.data);
   let created = 0;
   for (const n of list) {
     // Nothing crosses a block, in either direction.
@@ -44,12 +52,12 @@ export async function notifyJob(job: Job<{ eventId: string } & Record<string, un
       "select 1 from blocks where (blocker_id = $1 and blocked_id = $2) or (blocker_id = $2 and blocked_id = $1) limit 1", [n.recipient, n.actor]);
     if (blocked.rowCount) continue;
     const r = await workerPool().query(
-      `insert into notifications (recipient_id, actor_id, type, post_id, comment_id, event_id)
-       values ($1, $2, $3, $4, $5, $6) on conflict (event_id, recipient_id) do nothing returning id`,
-      [n.recipient, n.actor, n.type, n.postId ?? null, n.commentId ?? null, job.data.eventId]);
+      `insert into notifications (recipient_id, actor_id, type, post_id, comment_id, live_id, event_id)
+       values ($1, $2, $3, $4, $5, $6, $7) on conflict (event_id, recipient_id) do nothing returning id`,
+      [n.recipient, n.actor, n.type, n.postId ?? null, n.commentId ?? null, n.liveId ?? null, job.data.eventId]);
     if (r.rowCount) {
       created++;
-      await publish([n.recipient], "notification:new", { type: n.type });
+      await publish([n.recipient], "notification:new", { type: n.type, ...(n.liveId && { liveId: n.liveId }) });
     }
   }
   return { created };

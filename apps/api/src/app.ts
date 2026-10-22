@@ -19,6 +19,7 @@ import { conversationsRouter, keysRouter } from "./routes/conversations.js";
 import { collectionsRouter } from "./routes/collections.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { storiesRouter } from "./routes/stories.js";
+import { liveRouter } from "./routes/live.js";
 import { internalRouter, opsRouter, requireAdmin } from "./routes/ops.js";
 
 export function createApp() {
@@ -77,6 +78,7 @@ export function createApp() {
   app.use("/api/collections", collectionsRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/stories", storiesRouter);
+  app.use("/api/live", liveRouter);
   app.use("/api/ops", opsRouter);
   app.use("/api", (_req, res) => { res.status(404).json({ error: "Not found." }); });
 

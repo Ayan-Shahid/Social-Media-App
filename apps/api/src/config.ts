@@ -26,6 +26,10 @@ const schema = z.object({
   MAX_VIDEO_SECONDS: z.coerce.number().default(60),
   FFMPEG_PATH: z.string().default("ffmpeg"),
   FFPROBE_PATH: z.string().default("ffprobe"),
+  // Live video service (DECISIONS.md D16)
+  LIVE_PORT: z.coerce.number().default(4100),
+  LIVE_DIR: z.string().default("/tmp/glimpse-live"),
+  MAX_LIVE_MINUTES: z.coerce.number().default(60),
   TRUST_PROXY: z.coerce.number().default(1),
   // Background workers connect as their own role (DECISIONS.md D13).
   WORKER_DATABASE_URL: z.string().optional(),

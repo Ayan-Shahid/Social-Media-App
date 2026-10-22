@@ -11,6 +11,7 @@ import { resolveSession, SESSION_COOKIE } from "./middleware/session.js";
 import { publish, subscribe } from "./infra/bus.js";
 import { redis, keys } from "./infra/redis.js";
 import { asUser } from "./db/client.js";
+import { getUsers } from "./services/hydrate.js";
 
 let io: Server | null = null;
 let stopBus: (() => void) | null = null;
@@ -80,6 +81,42 @@ export function attachRealtime(server: http.Server) {
       ack(await onlineStatus(list).catch(() => []));
     });
 
+    // ---------- live video rooms (DECISIONS.md D16) ----------
+    // Joining is re-checked against RLS (can this viewer see the host?), then comments and hearts
+    // fan out to the room through the bus, so viewers on every API instance get them.
+    socket.on("live:join", async (id: unknown, ack: unknown) => {
+      if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id) || typeof ack !== "function") return;
+      const r = await asUser(userId, (tx) => tx.execute<{ status: string }>(sql`select status from live_streams where id = ${id}`)).catch(() => null);
+      if (!r?.rows[0]) return ack({ ok: false });
+      await socket.join(`live:${id}`);
+      // Viewer count = distinct users with a join (heartbeat) in the last 30 s. Clients re-join every 15 s.
+      const k = `live:${id}:viewers`, now = Date.now();
+      const [, , [, count]] = (await redis.multi().zadd(k, now, userId).zremrangebyscore(k, 0, now - 30_000).zcard(k).expire(k, 120).exec()) as [unknown, unknown, [unknown, number], unknown];
+      redis.eval("local c = tonumber(redis.call('get', KEYS[1]) or '0') if ARGV[1] + 0 > c then redis.call('set', KEYS[1], ARGV[1], 'EX', 86400) end", 1, `live:${id}:peak`, count).catch(() => {});
+      ack({ ok: true, status: r.rows[0].status, viewers: count });
+    });
+    socket.on("live:leave", (id: unknown) => {
+      if (typeof id !== "string") return;
+      socket.leave(`live:${id}`);
+      redis.zrem(`live:${id}:viewers`, userId).catch(() => {});
+    });
+    socket.on("live:comment", async (msg: unknown) => {
+      const m = msg as { id?: unknown; text?: unknown };
+      if (typeof m?.id !== "string" || typeof m.text !== "string" || !socket.rooms.has(`live:${m.id}`)) return;
+      const text = m.text.trim().slice(0, 200);
+      if (!text) return;
+      // 5 comments per 10 s per person, shared across instances.
+      const n = await redis.multi().incr(`live:rl:${userId}`).expire(`live:rl:${userId}`, 10, "NX").exec();
+      if (Number(n?.[0]?.[1]) > 5) return socket.emit("live:slowdown");
+      const user = (await asUser(userId, (tx) => getUsers(tx, [userId]))).get(userId);
+      await publish([`#live:${m.id}`], "live:comment", { id: crypto.randomUUID(), user, text, at: new Date().toISOString() });
+    });
+    socket.on("live:heart", async (id: unknown) => {
+      if (typeof id !== "string" || !socket.rooms.has(`live:${id}`)) return;
+      if (!(await redis.set(`live:heart:${userId}`, "1", "PX", 300, "NX"))) return; // max ~3 per second
+      await publish([`#live:${id}`], "live:heart", { userId });
+    });
+
     socket.on("disconnect", async () => {
       const left = (local.get(userId) ?? 1) - 1;
       if (left > 0) { local.set(userId, left); return; }
@@ -106,7 +143,7 @@ export function attachRealtime(server: http.Server) {
 
   // Deliver bus events to the sockets on this instance.
   stopBus = subscribe((e) => {
-    for (const u of e.to) io!.to(`user:${u}`).emit(e.event, e.payload);
+    for (const u of e.to) io!.to(u.startsWith("#") ? u.slice(1) : `user:${u}`).emit(e.event, e.payload);
   });
   return io;
 }

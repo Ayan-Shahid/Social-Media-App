@@ -22,6 +22,7 @@ export type EventMap = {
   "comment.created": { postId: string; commentId: string; userId: string; postAuthorId: string; mentions: string[] };
   "follow.created": { followerId: string; followeeId: string; accepted?: boolean }; // accepted: came from a request
   "follow.requested": { requesterId: string; targetId: string };
+  "live.started": { liveId: string; hostId: string };
   "follow.deleted": { followerId: string; followeeId: string };
 };
 export type EventType = keyof EventMap;
@@ -37,6 +38,7 @@ const ROUTES: Record<EventType, QueueName[]> = {
   "comment.created": ["notify"],
   "follow.created": ["fanout", "notify"],
   "follow.requested": ["notify"],
+  "live.started": ["notify"],
   "follow.deleted": ["fanout"],
 };
 

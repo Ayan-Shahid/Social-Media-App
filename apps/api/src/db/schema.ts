@@ -374,9 +374,10 @@ export const notifications = pgTable(
     id: id(),
     recipientId: uuid("recipient_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     actorId: uuid("actor_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    type: text("type").notNull(), // like | comment | follow | mention | repost
+    type: text("type").notNull(), // like | comment | follow | mention | repost | follow_request | follow_accept | live
     postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
     commentId: uuid("comment_id"),
+    liveId: uuid("live_id").references(() => liveStreams.id, { onDelete: "cascade" }),
     // The outbox event that created it: makes the worker idempotent.
     eventId: text("event_id").notNull(),
     createdAt: createdAt(),
@@ -385,9 +386,37 @@ export const notifications = pgTable(
   (t) => [
     uniqueIndex("notifications_event_key").on(t.eventId, t.recipientId),
     index("notifications_recipient_idx").on(t.recipientId, t.createdAt),
-    check("notifications_type", sql`${t.type} in ('like', 'comment', 'follow', 'mention', 'repost', 'follow_request', 'follow_accept')`),
+    check("notifications_type", sql`${t.type} in ('like', 'comment', 'follow', 'mention', 'repost', 'follow_request', 'follow_accept', 'live')`),
     pgPolicy("notifications_select_self", { for: "select", to: appRole, using: sql`${t.recipientId} = ${me}` }),
     pgPolicy("notifications_update_self", { for: "update", to: appRole, using: sql`${t.recipientId} = ${me}`, withCheck: sql`${t.recipientId} = ${me}` }),
+  ],
+).enableRLS();
+
+/**
+ * Live videos (DECISIONS.md D16). The row is the control record; the video itself flows through the
+ * live service (browser -> websocket -> ffmpeg -> HLS) and is never stored after the stream ends.
+ */
+export const liveStreams = pgTable(
+  "live_streams",
+  {
+    id: id(),
+    hostId: uuid("host_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default(""),
+    status: text("status").notNull().default("starting"), // starting | live | ended
+    createdAt: createdAt(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    peakViewers: integer("peak_viewers").notNull().default(0),
+  },
+  (t) => [
+    index("live_streams_host_idx").on(t.hostId, t.createdAt),
+    // At most one unfinished stream per person: a second "Go live" can't start a parallel one.
+    uniqueIndex("live_streams_one_active").on(t.hostId).where(sql`${t.status} <> 'ended'`),
+    check("live_streams_status", sql`${t.status} in ('starting', 'live', 'ended')`),
+    check("live_streams_title_len", sql`char_length(${t.title}) <= 100`),
+    pgPolicy("live_streams_select", { for: "select", to: appRole, using: sql`${signedIn} and ${canSee(t.hostId)}` }),
+    pgPolicy("live_streams_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.hostId} = ${me} and ${t.status} = 'starting'` }),
+    pgPolicy("live_streams_update_self", { for: "update", to: appRole, using: sql`${t.hostId} = ${me}`, withCheck: sql`${t.hostId} = ${me}` }),
   ],
 ).enableRLS();
 
