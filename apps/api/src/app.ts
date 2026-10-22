@@ -12,7 +12,7 @@ import { csrfMiddleware } from "./middleware/csrf.js";
 import { httpDuration } from "./infra/metrics.js";
 import { queue, QUEUES } from "./infra/queues.js";
 import { authRouter } from "./routes/auth.js";
-import { usersRouter } from "./routes/users.js";
+import { followRequestsRouter, usersRouter } from "./routes/users.js";
 import { commentsRouter, postsRouter, tagsRouter } from "./routes/posts.js";
 import { mediaRouter } from "./routes/media.js";
 import { conversationsRouter, keysRouter } from "./routes/conversations.js";
@@ -67,6 +67,7 @@ export function createApp() {
 
   app.use("/api/auth", authRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/follow-requests", followRequestsRouter);
   app.use("/api/posts", postsRouter);
   app.use("/api/comments", commentsRouter);
   app.use("/api/tags", tagsRouter);

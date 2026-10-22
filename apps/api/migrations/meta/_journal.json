@@ -64,6 +64,20 @@
       "when": 1792689464804,
       "tag": "0008_media_uploading",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792690087585,
+      "tag": "0009_privacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792690183417,
+      "tag": "0010_notification_types",
+      "breakpoints": true
     }
   ]
 }

@@ -18,7 +18,8 @@ storiesRouter.get("/tray", async (req, res) => {
       select s.author_id, max(s.created_at) as latest,
         count(*) filter (where not exists (select 1 from story_views v where v.story_id = s.id and v.viewer_id = ${me}))::int as unseen
       from stories s
-      where s.author_id = ${me} or s.author_id in (select followee_id from follows where follower_id = ${me})
+      where (s.author_id = ${me} or s.author_id in (select followee_id from follows where follower_id = ${me}))
+        and not exists (select 1 from mutes m where m.muter_id = ${me} and m.muted_id = s.author_id)
       group by s.author_id
       order by (s.author_id = ${me}) desc, (count(*) filter (where not exists (select 1 from story_views v where v.story_id = s.id and v.viewer_id = ${me})) > 0) desc, max(s.created_at) desc
       limit 50`);

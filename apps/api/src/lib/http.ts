@@ -30,7 +30,9 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   if (e?.type === "entity.parse.failed") return res.status(400).json({ error: "Invalid JSON." });
   // Errors from Express itself (e.g. a blocked "../" path) carry their own 4xx status.
   if (typeof e?.status === "number" && e.status >= 400 && e.status < 500) return res.status(e.status).json({ error: "Bad request." });
-  if (e?.code === "42501") return res.status(403).json({ error: "Not allowed." }); // RLS / permission denied
+  // RLS / permission denied. Drizzle wraps driver errors, so the SQLSTATE may be on `cause`.
+  const code = e?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
+  if (code === "42501") return res.status(403).json({ error: "Not allowed." });
   req.log?.error({ err }, "unhandled error");
   return res.status(500).json({ error: "Something went wrong." });
 }

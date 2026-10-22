@@ -14,9 +14,9 @@ import { cacheHits, cacheMisses } from "../infra/metrics.js";
 import type { MediaVariants } from "../db/schema.js";
 import { uuidList } from "../lib/sql.js";
 
-export interface PublicUser { id: string; username: string; displayName: string; bio: string; avatarUrl: string | null }
+export interface PublicUser { id: string; username: string; displayName: string; bio: string; avatarUrl: string | null; isPrivate: boolean }
 export interface MediaDto {
-  id: string; kind: "image" | "video"; status: "processing" | "ready" | "failed"; error: string | null;
+  id: string; kind: "image" | "video"; status: "uploading" | "processing" | "ready" | "failed"; error: string | null;
   url: string | null; srcset: { w: number; url: string }[]; hls: string | null; posterUrl: string | null;
   width: number; height: number; durationMs: number | null;
 }
@@ -48,12 +48,12 @@ const MEDIA_COLS = sql`m.id, m.kind, m.status, m.error, m.variants, m.file_name,
 
 export async function getUsers(tx: Tx, ids: string[]): Promise<Map<string, PublicUser>> {
   return cachedMany<PublicUser>("user", [...new Set(ids)], keys.user, USER_TTL, async (missing) => {
-    const r = await tx.execute<{ id: string; username: string; display_name: string; bio: string; avatar: MediaVariants | null; avatar_file: string | null }>(sql`
-      select u.id, u.username, u.display_name, u.bio, m.variants as avatar, m.file_name as avatar_file
+    const r = await tx.execute<{ id: string; username: string; display_name: string; bio: string; is_private: boolean; avatar: MediaVariants | null; avatar_file: string | null }>(sql`
+      select u.id, u.username, u.display_name, u.bio, u.is_private, m.variants as avatar, m.file_name as avatar_file
       from users u left join media m on m.id = u.avatar_media_id and m.status = 'ready'
       where u.id in ${uuidList(missing)}`);
     return new Map(r.rows.map((u) => [u.id, {
-      id: u.id, username: u.username, displayName: u.display_name, bio: u.bio,
+      id: u.id, username: u.username, displayName: u.display_name, bio: u.bio, isPrivate: u.is_private,
       avatarUrl: u.avatar?.src ? `/media/${u.avatar.src}` : u.avatar_file ? `/media/${u.avatar_file}` : null,
     }]));
   });
@@ -63,7 +63,7 @@ export const POST_CACHE_TTL = POST_TTL;
 export type { CachedPost };
 
 async function getCachedPosts(tx: Tx, ids: string[]) {
-  return cachedMany<CachedPost>("post", ids, keys.post, POST_TTL, (missing) => loadPosts(tx, missing));
+  return cachedMany<CachedPost>("post", ids, keys.post, POST_TTL, (missing) => loadPosts(tx, missing), { negative: false });
 }
 
 /** Loads posts straight from Postgres in the shape stored in post:{id}. */
@@ -126,19 +126,18 @@ export interface FeedRef { postId: string; repostedBy?: string }
 export async function hydrate(tx: Tx, viewer: string, refs: FeedRef[]): Promise<PostDto[]> {
   const ids = [...new Set(refs.map((r) => r.postId))];
   if (!ids.length) return [];
-  const posts = await getCachedPosts(tx, ids);
-  const present = ids.filter((id) => posts.has(id));
+  // Visibility is decided per viewer, in Postgres, on every read (DECISIONS.md D15). The post content
+  // may come from the shared cache, but the cache never decides who may see it: viewerFlags reads
+  // `posts` under the viewer's RLS, so a post they can't see (private account, block) has no row.
+  const [posts, flags] = await Promise.all([getCachedPosts(tx, ids), viewerFlags(tx, viewer, ids)]);
+  const present = ids.filter((id) => posts.has(id) && flags.has(id));
   const userIds = [...present.map((id) => posts.get(id)!.authorId), ...refs.flatMap((r) => (r.repostedBy ? [r.repostedBy] : []))];
-  const [users, stats, flags] = await Promise.all([
-    getUsers(tx, userIds),
-    getStats(tx, present),
-    viewerFlags(tx, viewer, present),
-  ]);
+  const [users, stats] = await Promise.all([getUsers(tx, userIds), getStats(tx, present)]);
   const out: PostDto[] = [];
   for (const ref of refs) {
     const p = posts.get(ref.postId);
     const author = p && users.get(p.authorId);
-    if (!p || !author) continue;
+    if (!p || !author || !flags.has(p.id)) continue;
     const s = stats.get(p.id) ?? { likes: 0, comments: 0, reposts: 0 };
     const f = flags.get(p.id);
     const { authorId: _a, ...rest } = p;

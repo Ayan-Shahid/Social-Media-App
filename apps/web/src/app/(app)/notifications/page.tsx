@@ -1,16 +1,44 @@
 "use client";
 import Link from "next/link";
 import { useEffect } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { api } from "@/lib/api";
 import { timeAgo } from "@/lib/dates";
-import type { Notification } from "@/lib/types";
+import type { Notification, User } from "@/lib/types";
+import { Button } from "@/components/Button";
 import { Avatar, Empty, PageTitle, Spinner } from "@/components/ui";
 
 const VERB: Record<Notification["type"], string> = {
   like: "liked your post", comment: "commented:", follow: "started following you", mention: "mentioned you", repost: "reposted your post",
+  follow_request: "asked to follow you", follow_accept: "accepted your follow request",
 };
+
+/** Pending requests to a private account, answered right here. */
+function FollowRequests() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["follow-requests"], queryFn: () => api<{ requests: { user: User; createdAt: string }[] }>("/api/follow-requests").then((r) => r.requests) });
+  const answer = useMutation({
+    mutationFn: ({ id, accept }: { id: string; accept: boolean }) => api(`/api/follow-requests/${id}${accept ? "/accept" : ""}`, { method: accept ? "POST" : "DELETE" }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["follow-requests"] }); qc.invalidateQueries({ queryKey: ["profile"] }); },
+  });
+  if (!q.data?.length) return null;
+  return (
+    <section className="mb-6">
+      <h2 className="label mb-2">Follow requests · {q.data.length}</h2>
+      <ul data-surface className="divide-y divide-rule overflow-hidden rounded-2xl">
+        {q.data.map(({ user }) => (
+          <li key={user.id} className="rise flex items-center gap-3 px-4 py-3">
+            <Link href={`/u/${user.username}`}><Avatar user={user} size={40} /></Link>
+            <Link href={`/u/${user.username}`} className="min-w-0 flex-1 truncate font-semibold">{user.username}</Link>
+            <Button size="sm" loading={answer.isPending && answer.variables?.id === user.id && answer.variables.accept} onClick={() => answer.mutate({ id: user.id, accept: true })}>Confirm</Button>
+            <Button size="sm" variant="line" onClick={() => answer.mutate({ id: user.id, accept: false })}>Delete</Button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 export default function NotificationsPage() {
   const qc = useQueryClient();
@@ -24,6 +52,7 @@ export default function NotificationsPage() {
   return (
     <div className="mx-auto max-w-[620px]">
       <PageTitle>Notifications</PageTitle>
+      <FollowRequests />
       {q.isPending ? <Spinner /> : !q.data?.length ? <Empty title="Nothing yet">Likes, comments, follows and mentions show up here.</Empty> : (
         <ul data-surface className="divide-y divide-rule overflow-hidden rounded-2xl">
           {q.data.map((n, i) => {

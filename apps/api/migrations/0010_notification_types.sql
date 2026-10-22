@@ -1,0 +1,2 @@
+ALTER TABLE "notifications" DROP CONSTRAINT "notifications_type";--> statement-breakpoint
+ALTER TABLE "notifications" ADD CONSTRAINT "notifications_type" CHECK ("notifications"."type" in ('like', 'comment', 'follow', 'mention', 'repost', 'follow_request', 'follow_accept'));

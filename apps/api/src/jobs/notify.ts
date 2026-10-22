@@ -5,7 +5,7 @@ import { workerPool } from "../db/worker-pool.js";
 import { publish } from "../infra/bus.js";
 import type { EventMap } from "../infra/outbox.js";
 
-type N = { recipient: string; actor: string; type: "like" | "comment" | "follow" | "mention" | "repost"; postId?: string; commentId?: string };
+type N = { recipient: string; actor: string; type: "like" | "comment" | "follow" | "mention" | "repost" | "follow_request" | "follow_accept"; postId?: string; commentId?: string };
 
 function build(name: string, d: Record<string, unknown>): N[] {
   const out: N[] = [];
@@ -13,7 +13,13 @@ function build(name: string, d: Record<string, unknown>): N[] {
   switch (name) {
     case "like.created": { const e = d as EventMap["like.created"]; out.push({ recipient: e.postAuthorId, actor: e.userId, type: "like", postId: e.postId }); break; }
     case "repost.created": { const e = d as EventMap["repost.created"]; out.push({ recipient: e.postAuthorId, actor: e.userId, type: "repost", postId: e.postId }); break; }
-    case "follow.created": { const e = d as EventMap["follow.created"]; out.push({ recipient: e.followeeId, actor: e.followerId, type: "follow" }); break; }
+    case "follow.created": {
+      const e = d as EventMap["follow.created"];
+      // An accepted request tells the requester; a plain follow tells the person followed.
+      out.push(e.accepted ? { recipient: e.followerId, actor: e.followeeId, type: "follow_accept" } : { recipient: e.followeeId, actor: e.followerId, type: "follow" });
+      break;
+    }
+    case "follow.requested": { const e = d as EventMap["follow.requested"]; out.push({ recipient: e.targetId, actor: e.requesterId, type: "follow_request" }); break; }
     case "comment.created": {
       const e = d as EventMap["comment.created"];
       out.push({ recipient: e.postAuthorId, actor: e.userId, type: "comment", postId: e.postId, commentId: e.commentId });
@@ -33,6 +39,10 @@ export async function notifyJob(job: Job<{ eventId: string } & Record<string, un
   const list = build(job.name, job.data);
   let created = 0;
   for (const n of list) {
+    // Nothing crosses a block, in either direction.
+    const blocked = await workerPool().query(
+      "select 1 from blocks where (blocker_id = $1 and blocked_id = $2) or (blocker_id = $2 and blocked_id = $1) limit 1", [n.recipient, n.actor]);
+    if (blocked.rowCount) continue;
     const r = await workerPool().query(
       `insert into notifications (recipient_id, actor_id, type, post_id, comment_id, event_id)
        values ($1, $2, $3, $4, $5, $6) on conflict (event_id, recipient_id) do nothing returning id`,

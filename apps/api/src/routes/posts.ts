@@ -31,6 +31,9 @@ export async function listIds(tx: Tx, where: SQL, cursor: Cursor, limit: number)
   return { ids: rows.map((x) => x.id), nextCursor: r.rows.length > limit && last ? makeCursor(last.created_at, last.id) : null };
 }
 
+/** Discovery surfaces (explore, shorts, hashtags) show public accounts only, like Instagram. */
+const publicOnly = sql`not exists (select 1 from users u where u.id = p.author_id and u.is_private)`;
+
 export async function postPage(tx: Tx, me: string, where: SQL, cursor: Cursor, limit = 12) {
   const { ids, nextCursor } = await listIds(tx, where, cursor, limit);
   return { posts: await hydrate(tx, me, ids.map((postId) => ({ postId }))), nextCursor };
@@ -98,8 +101,10 @@ postsRouter.get("/explore", async (req, res) => {
   const out = await asUser(me, async (tx) => {
     // The first page is the same for everyone: cache the id list for 15 s.
     let page: { ids: string[]; nextCursor: string | null } | null = null;
-    if (!cursor) page = await cached("explore", "explore:p1", 15, () => listIds(tx, sql`p.kind = 'post'`, null, 24));
-    page ??= await listIds(tx, sql`p.kind = 'post'`, cursor, 24);
+    // Public accounts only, so the shared list doesn't depend on who loaded it (blocks are still
+    // applied per viewer in hydrate).
+    if (!cursor) page = await cached("explore", "explore:p1", 15, () => listIds(tx, sql`p.kind = 'post' and ${publicOnly}`, null, 24));
+    page ??= await listIds(tx, sql`p.kind = 'post' and ${publicOnly}`, cursor, 24);
     return { posts: await hydrate(tx, me, page.ids.map((postId) => ({ postId }))), nextCursor: page.nextCursor };
   });
   res.json(out);
@@ -107,7 +112,7 @@ postsRouter.get("/explore", async (req, res) => {
 
 postsRouter.get("/shorts", async (req, res) => {
   const me = requireUser(req);
-  res.json(await asUser(me, (tx) => postPage(tx, me, sql`p.kind = 'short'`, parseCursor(req.query.cursor), 6)));
+  res.json(await asUser(me, (tx) => postPage(tx, me, sql`p.kind = 'short' and ${publicOnly}`, parseCursor(req.query.cursor), 6)));
 });
 
 postsRouter.get("/:id", async (req, res) => {
@@ -115,7 +120,7 @@ postsRouter.get("/:id", async (req, res) => {
   const id = parse(z.uuid(), req.params.id);
   const post = await asUser(me, async (tx) => {
     // Single-key read with stampede protection: 500 concurrent cold requests -> one database load.
-    const p = await cached<CachedPost>("post", keys.post(id), POST_CACHE_TTL, async () => (await loadPosts(tx, [id])).get(id) ?? null);
+    const p = await cached<CachedPost>("post", keys.post(id), POST_CACHE_TTL, async () => (await loadPosts(tx, [id])).get(id) ?? null, { negative: false });
     if (!p) return null;
     return (await hydrate(tx, me, [{ postId: id }]))[0] ?? null;
   });
@@ -296,8 +301,8 @@ tagsRouter.get("/:tag", async (req, res) => {
   const me = requireUser(req);
   const tag = parse(z.string().regex(/^[\p{L}\p{N}_]{1,50}$/u, "Invalid tag"), req.params.tag).toLowerCase();
   const out = await asUser(me, async (tx) => {
-    const page = await postPage(tx, me, sql`p.id in (select ph.post_id from post_hashtags ph join hashtags h on h.id = ph.hashtag_id where h.tag = ${tag})`, parseCursor(req.query.cursor), 24);
-    const c = await tx.execute<{ n: number }>(sql`select count(*)::int as n from post_hashtags ph join hashtags h on h.id = ph.hashtag_id where h.tag = ${tag}`);
+    const page = await postPage(tx, me, sql`p.id in (select ph.post_id from post_hashtags ph join hashtags h on h.id = ph.hashtag_id where h.tag = ${tag}) and ${publicOnly}`, parseCursor(req.query.cursor), 24);
+    const c = await tx.execute<{ n: number }>(sql`select count(*)::int as n from post_hashtags ph join hashtags h on h.id = ph.hashtag_id join posts p on p.id = ph.post_id where h.tag = ${tag} and ${publicOnly}`);
     return { tag, count: c.rows[0]?.n ?? 0, ...page };
   });
   res.json(out);

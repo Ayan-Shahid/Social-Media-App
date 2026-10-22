@@ -16,7 +16,7 @@ notificationsRouter.get("/", async (req, res) => {
         (array_agg(actor_id order by created_at desc))[1:3] as actors, count(*)::int as total,
         max(created_at) as latest, bool_or(read_at is null) as unread
       from notifications
-      where created_at > now() - interval '30 days'
+      where created_at > now() - interval '30 days' and not app.blocked_with(actor_id)
       group by type, post_id, case when type in ('like', 'repost') then date_trunc('day', created_at)::text else id::text end
       order by latest desc limit 60`);
     const users = await getUsers(tx, r.rows.flatMap((x) => x.actors));

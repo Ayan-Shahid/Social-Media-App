@@ -28,6 +28,9 @@ export const appRole = pgRole("glimpse_app").existing();
 /** The signed-in user for the current transaction, or NULL. */
 const me = sql`nullif(current_setting('app.user_id', true), '')::uuid`;
 const signedIn = sql`${me} is not null`;
+// Privacy (DECISIONS.md D15): "can the signed-in user see content by this author?" One definition,
+// used by every policy that hides content. SECURITY DEFINER because it must read blocks in both directions.
+const canSee = (author: unknown) => sql`app.can_see(${author})`;
 
 const id = () => uuid("id").primaryKey().defaultRandom();
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
@@ -42,6 +45,7 @@ export const users = pgTable(
     displayName: text("display_name").notNull().default(""),
     bio: text("bio").notNull().default(""),
     avatarMediaId: uuid("avatar_media_id"),
+    isPrivate: boolean("is_private").notNull().default(false),
     createdAt: createdAt(),
   },
   (t) => [
@@ -170,8 +174,61 @@ export const follows = pgTable(
     index("follows_followee_idx").on(t.followeeId),
     check("follows_not_self", sql`${t.followerId} <> ${t.followeeId}`),
     pgPolicy("follows_select", { for: "select", to: appRole, using: signedIn }),
-    pgPolicy("follows_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.followerId} = ${me}` }),
-    pgPolicy("follows_delete_self", { for: "delete", to: appRole, using: sql`${t.followerId} = ${me}` }),
+    // Direct follows only for public accounts you're not blocked from; private ones go through a request.
+    pgPolicy("follows_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.followerId} = ${me} and app.can_follow(${t.followeeId})` }),
+    // Unfollow, or remove someone who follows you.
+    pgPolicy("follows_delete_self", { for: "delete", to: appRole, using: sql`${t.followerId} = ${me} or ${t.followeeId} = ${me}` }),
+  ],
+).enableRLS();
+
+export const followRequests = pgTable(
+  "follow_requests",
+  {
+    requesterId: uuid("requester_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    targetId: uuid("target_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.requesterId, t.targetId] }),
+    index("follow_requests_target_idx").on(t.targetId, t.createdAt),
+    check("follow_requests_not_self", sql`${t.requesterId} <> ${t.targetId}`),
+    pgPolicy("follow_requests_select", { for: "select", to: appRole, using: sql`${t.requesterId} = ${me} or ${t.targetId} = ${me}` }),
+    pgPolicy("follow_requests_insert", { for: "insert", to: appRole, withCheck: sql`${t.requesterId} = ${me} and app.can_request(${t.targetId})` }),
+    // Cancel your request, or decline one sent to you. Accepting goes through app.accept_follow_request().
+    pgPolicy("follow_requests_delete", { for: "delete", to: appRole, using: sql`${t.requesterId} = ${me} or ${t.targetId} = ${me}` }),
+  ],
+).enableRLS();
+
+/** Only the blocker can see their blocks; the other side only notices that content disappears. */
+export const blocks = pgTable(
+  "blocks",
+  {
+    blockerId: uuid("blocker_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    blockedId: uuid("blocked_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.blockerId, t.blockedId] }),
+    index("blocks_blocked_idx").on(t.blockedId),
+    check("blocks_not_self", sql`${t.blockerId} <> ${t.blockedId}`),
+    pgPolicy("blocks_select_own", { for: "select", to: appRole, using: sql`${t.blockerId} = ${me}` }),
+    pgPolicy("blocks_delete_own", { for: "delete", to: appRole, using: sql`${t.blockerId} = ${me}` }),
+    // Inserts go through app.block_user(), which also removes follows both ways in the same transaction.
+  ],
+).enableRLS();
+
+/** Mutes are a preference, not a permission: they filter your feed and stories tray, nothing else. */
+export const mutes = pgTable(
+  "mutes",
+  {
+    muterId: uuid("muter_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    mutedId: uuid("muted_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.muterId, t.mutedId] }),
+    check("mutes_not_self", sql`${t.muterId} <> ${t.mutedId}`),
+    pgPolicy("mutes_own", { for: "all", to: appRole, using: sql`${t.muterId} = ${me}`, withCheck: sql`${t.muterId} = ${me}` }),
   ],
 ).enableRLS();
 
@@ -192,7 +249,7 @@ export const posts = pgTable(
     index("posts_kind_created_idx").on(t.kind, t.createdAt),
     check("posts_kind", sql`${t.kind} in ('post', 'short')`),
     check("posts_caption_len", sql`char_length(${t.caption}) <= 2200`),
-    pgPolicy("posts_select", { for: "select", to: appRole, using: signedIn }),
+    pgPolicy("posts_select", { for: "select", to: appRole, using: sql`${signedIn} and ${canSee(t.authorId)}` }),
     pgPolicy("posts_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.authorId} = ${me}` }),
     pgPolicy("posts_update_self", { for: "update", to: appRole, using: sql`${t.authorId} = ${me}`, withCheck: sql`${t.authorId} = ${me}` }),
     pgPolicy("posts_delete_self", { for: "delete", to: appRole, using: sql`${t.authorId} = ${me}` }),
@@ -232,7 +289,7 @@ export const reposts = pgTable(
     primaryKey({ columns: [t.userId, t.postId] }),
     index("reposts_post_idx").on(t.postId),
     pgPolicy("reposts_select", { for: "select", to: appRole, using: signedIn }),
-    pgPolicy("reposts_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.userId} = ${me}` }),
+    pgPolicy("reposts_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.userId} = ${me} and exists (select 1 from posts p where p.id = ${t.postId})` }),
     pgPolicy("reposts_delete_self", { for: "delete", to: appRole, using: sql`${t.userId} = ${me}` }),
   ],
 ).enableRLS();
@@ -263,7 +320,7 @@ export const savedPosts = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.postId] }),
-    pgPolicy("saved_posts_owner", { for: "all", to: appRole, using: sql`${t.userId} = ${me}`, withCheck: sql`${t.userId} = ${me}` }),
+    pgPolicy("saved_posts_owner", { for: "all", to: appRole, using: sql`${t.userId} = ${me}`, withCheck: sql`${t.userId} = ${me} and exists (select 1 from posts p where p.id = ${t.postId})` }),
   ],
 ).enableRLS();
 
@@ -328,7 +385,7 @@ export const notifications = pgTable(
   (t) => [
     uniqueIndex("notifications_event_key").on(t.eventId, t.recipientId),
     index("notifications_recipient_idx").on(t.recipientId, t.createdAt),
-    check("notifications_type", sql`${t.type} in ('like', 'comment', 'follow', 'mention', 'repost')`),
+    check("notifications_type", sql`${t.type} in ('like', 'comment', 'follow', 'mention', 'repost', 'follow_request', 'follow_accept')`),
     pgPolicy("notifications_select_self", { for: "select", to: appRole, using: sql`${t.recipientId} = ${me}` }),
     pgPolicy("notifications_update_self", { for: "update", to: appRole, using: sql`${t.recipientId} = ${me}`, withCheck: sql`${t.recipientId} = ${me}` }),
   ],
@@ -346,7 +403,7 @@ export const stories = pgTable(
   },
   (t) => [
     index("stories_author_idx").on(t.authorId, t.expiresAt),
-    pgPolicy("stories_select_active", { for: "select", to: appRole, using: sql`${signedIn} and ${t.expiresAt} > now()` }),
+    pgPolicy("stories_select_active", { for: "select", to: appRole, using: sql`${signedIn} and ${t.expiresAt} > now() and ${canSee(t.authorId)}` }),
     pgPolicy("stories_insert_self", {
       for: "insert", to: appRole,
       withCheck: sql`${t.authorId} = ${me} and exists (select 1 from media m where m.id = ${t.mediaId} and m.owner_id = ${me})`,
@@ -383,7 +440,8 @@ export const postLikes = pgTable(
   (t) => [
     primaryKey({ columns: [t.postId, t.userId] }),
     pgPolicy("post_likes_select", { for: "select", to: appRole, using: signedIn }),
-    pgPolicy("post_likes_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.userId} = ${me}` }),
+    // RLS applies inside the subquery too: you can only like a post the posts policy lets you see.
+    pgPolicy("post_likes_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.userId} = ${me} and exists (select 1 from posts p where p.id = ${t.postId})` }),
     pgPolicy("post_likes_delete_self", { for: "delete", to: appRole, using: sql`${t.userId} = ${me}` }),
   ],
 ).enableRLS();
@@ -400,8 +458,8 @@ export const comments = pgTable(
   (t) => [
     index("comments_post_created_idx").on(t.postId, t.createdAt),
     check("comments_body_len", sql`char_length(${t.body}) between 1 and 1000`),
-    pgPolicy("comments_select", { for: "select", to: appRole, using: signedIn }),
-    pgPolicy("comments_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.authorId} = ${me}` }),
+    pgPolicy("comments_select", { for: "select", to: appRole, using: sql`${signedIn} and exists (select 1 from posts p where p.id = ${t.postId})` }),
+    pgPolicy("comments_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.authorId} = ${me} and exists (select 1 from posts p where p.id = ${t.postId})` }),
     // The comment's author, or the owner of the post, can delete it.
     pgPolicy("comments_delete", {
       for: "delete", to: appRole,
@@ -517,7 +575,8 @@ export const messages = pgTable(
     index("messages_conversation_created_idx").on(t.conversationId, t.createdAt),
     check("messages_ciphertext_len", sql`char_length(${t.ciphertext}) <= 20000`),
     pgPolicy("messages_select_member", { for: "select", to: appRole, using: isMember(t.conversationId) }),
-    pgPolicy("messages_insert_member", { for: "insert", to: appRole, withCheck: sql`${t.senderId} = ${me} and ${isMember(t.conversationId)}` }),
+    // In a 1:1 chat, a block on either side stops new messages (old ones stay readable).
+    pgPolicy("messages_insert_member", { for: "insert", to: appRole, withCheck: sql`${t.senderId} = ${me} and ${isMember(t.conversationId)} and not app.direct_blocked(${t.conversationId})` }),
   ],
 ).enableRLS();
 

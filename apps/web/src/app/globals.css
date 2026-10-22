@@ -13,6 +13,7 @@
   --color-graphite: #5b616b;
   --color-rule: #d3d7dd;
   --color-stamp: #f2691b;
+  --color-stamp-ink: #c9500f; /* orange that passes contrast for small text */
   --color-heart: #e0323b;
 
   --font-display: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;

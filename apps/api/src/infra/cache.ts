@@ -20,7 +20,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Returns the cached value or loads it once. Across processes, a short Redis lock makes sure only
  * one instance hits the database for a cold key; the others wait briefly for the fresh value.
  */
-export async function cached<T>(name: string, key: string, ttlSeconds: number, load: () => Promise<T | null>): Promise<T | null> {
+/**
+ * `negative: false` for content whose loader runs under a viewer's RLS (posts): "no row" may mean
+ * "you can't see it", not "it doesn't exist", so caching the miss would hide it from everyone.
+ */
+type Opts = { negative?: boolean };
+
+export async function cached<T>(name: string, key: string, ttlSeconds: number, load: () => Promise<T | null>, opts: Opts = {}): Promise<T | null> {
   if (config.CACHE_BYPASS) return load(); // benchmarks only: measure the same code path without Redis
   const hit = await redis.get(key);
   if (hit !== null) {
@@ -46,7 +52,7 @@ export async function cached<T>(name: string, key: string, ttlSeconds: number, l
     try {
       dbLoads.inc({ cache: name });
       const value = await load();
-      if (value === null) await redis.set(key, NOT_FOUND, "EX", NEGATIVE_TTL);
+      if (value === null) { if (opts.negative !== false) await redis.set(key, NOT_FOUND, "EX", NEGATIVE_TTL); }
       else await redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
       return value;
     } finally {
@@ -63,7 +69,7 @@ export async function cached<T>(name: string, key: string, ttlSeconds: number, l
  * Uses the same keys as `cached`, so single and batch reads share entries.
  */
 export async function cachedMany<T>(name: string, ids: string[], keyOf: (id: string) => string, ttlSeconds: number,
-  loadMany: (ids: string[]) => Promise<Map<string, T>>): Promise<Map<string, T>> {
+  loadMany: (ids: string[]) => Promise<Map<string, T>>, opts: Opts = {}): Promise<Map<string, T>> {
   const out = new Map<string, T>();
   if (!ids.length) return out;
   if (config.CACHE_BYPASS) return loadMany(ids);
@@ -82,7 +88,7 @@ export async function cachedMany<T>(name: string, ids: string[], keyOf: (id: str
     const pipe = redis.pipeline();
     for (const id of missing) {
       const v = loaded.get(id);
-      if (v === undefined) pipe.set(keyOf(id), NOT_FOUND, "EX", NEGATIVE_TTL);
+      if (v === undefined) { if (opts.negative !== false) pipe.set(keyOf(id), NOT_FOUND, "EX", NEGATIVE_TTL); }
       else { out.set(id, v); pipe.set(keyOf(id), JSON.stringify(v), "EX", ttlSeconds); }
     }
     await pipe.exec();

@@ -113,7 +113,10 @@ export async function readFeed(tx: Tx, viewer: string, cursor: string | null, li
   const shown = new Set(posts.map((p) => p.id));
   const stale = page.filter((x) => x.m && (!shown.has(x.ref.postId) || !stillVisible(x.ref, posts, viewer, following))).map((x) => x.m);
   if (stale.length) redis.zrem(key, ...stale).catch(() => {});
-  const visible = posts.filter((p) => stillVisible({ postId: p.id, repostedBy: p.repostedBy?.id }, posts, viewer, following));
+  // Mutes hide, but don't delete: unmuting brings the items back, so they stay in the timeline.
+  const muted = await mutedSet(tx, viewer);
+  const visible = posts.filter((p) => stillVisible({ postId: p.id, repostedBy: p.repostedBy?.id }, posts, viewer, following)
+    && !muted.has(p.author.id) && !(p.repostedBy && muted.has(p.repostedBy.id)));
 
   const last = page[page.length - 1];
   return { posts: visible, nextCursor: page.length === limit && last ? String(last.ts) : null, source };
@@ -128,5 +131,15 @@ async function followingSet(tx: Tx, viewer: string, ids: string[]) {
   const list = [...new Set(ids.filter(Boolean))];
   if (!list.length) return new Set<string>();
   const r = await tx.execute<{ id: string }>(sql`select followee_id as id from follows where follower_id = ${viewer} and followee_id in ${uuidList(list)}`);
+  return new Set(r.rows.map((x) => x.id));
+}
+
+/** Who the viewer muted. Read on every feed page, so kept as a Redis set (with a marker for "none"). */
+export async function mutedSet(tx: Tx, viewer: string): Promise<Set<string>> {
+  const k = keys.mutes(viewer);
+  const cachedIds = await redis.smembers(k);
+  if (cachedIds.length) return new Set(cachedIds.filter((x) => x !== "-"));
+  const r = await tx.execute<{ id: string }>(sql`select muted_id as id from mutes where muter_id = ${viewer}`);
+  await redis.multi().sadd(k, "-", ...r.rows.map((x) => x.id)).expire(k, 3600).exec();
   return new Set(r.rows.map((x) => x.id));
 }

@@ -19,6 +19,7 @@ export const keys = {
   postStats: (id: string) => `post:${id}:stats`,
   user: (id: string) => `user:${id}`,
   userStats: (id: string) => `user:${id}:stats`,
+  mutes: (id: string) => `mutes:${id}`,
   feed: (userId: string) => `feed:${userId}`,
   lock: (key: string) => `lock:${key}`,
   presence: "presence",
