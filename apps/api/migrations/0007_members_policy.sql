@@ -1,0 +1,1 @@
+ALTER POLICY "members_insert" ON "conversation_members" TO glimpse_app WITH CHECK (app.is_member("conversation_members"."conversation_id") or app.is_creator("conversation_members"."conversation_id"));

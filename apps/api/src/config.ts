@@ -20,8 +20,24 @@ const schema = z.object({
   FFMPEG_PATH: z.string().default("ffmpeg"),
   FFPROBE_PATH: z.string().default("ffprobe"),
   TRUST_PROXY: z.coerce.number().default(1),
+  // Background workers connect as their own role (DECISIONS.md D13).
+  WORKER_DATABASE_URL: z.string().optional(),
+  // D1: cache (evictable) and queue (durable) live in separate Redis instances.
+  REDIS_CACHE_URL: z.string().default("redis://localhost:6380"),
+  REDIS_QUEUE_URL: z.string().default("redis://localhost:6381"),
+  // D3: authors with at least this many followers are pulled at read time instead of pushed.
+  FANOUT_THRESHOLD: z.coerce.number().default(10_000),
+  FEED_MAX_ITEMS: z.coerce.number().default(800),
+  INSTANCE_ID: z.string().default(process.env.HOSTNAME ?? "api-local"),
+  ADMIN_USERNAMES: z.string().default(""),
+  // Sign in with Google (OIDC). Leave the client id empty to hide the button.
+  GOOGLE_CLIENT_ID: z.string().default(""),
+  GOOGLE_CLIENT_SECRET: z.string().default(""),
+  GOOGLE_ISSUER: z.string().default("https://accounts.google.com"),
 });
 
 export const config = schema.parse(process.env);
 export const isProd = config.NODE_ENV === "production";
 export const secureCookies = config.APP_ORIGIN.startsWith("https://");
+
+export const adminUsernames = new Set(config.ADMIN_USERNAMES.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));

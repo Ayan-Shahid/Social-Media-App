@@ -11,15 +11,22 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.resolve(here, "../../migrations");
 
-export async function runMigrations(ownerUrl: string, appRole: string, appPassword: string | undefined) {
+async function ensureRole(client: pg.Client, name: string, attrs: string, password: string | undefined) {
+  const role = client.escapeIdentifier(name);
+  const exists = await client.query("select 1 from pg_roles where rolname = $1", [name]);
+  if (!exists.rowCount) await client.query(`create role ${role} ${attrs}`);
+  await client.query(`alter role ${role} ${attrs}`);
+  if (password) await client.query(`alter role ${role} password ${client.escapeLiteral(password)}`);
+}
+
+export async function runMigrations(ownerUrl: string, appRole: string, appPassword: string | undefined, workerPassword?: string) {
   const client = new pg.Client({ connectionString: ownerUrl });
   await client.connect();
   try {
-    const role = client.escapeIdentifier(appRole);
-    const exists = await client.query("select 1 from pg_roles where rolname = $1", [appRole]);
-    if (!exists.rowCount) await client.query(`create role ${role} login nosuperuser nobypassrls nocreatedb nocreaterole`);
-    await client.query(`alter role ${role} login nosuperuser nobypassrls nocreatedb nocreaterole`);
-    if (appPassword) await client.query(`alter role ${role} password ${client.escapeLiteral(appPassword)}`);
+    // App role: every API request. Can never bypass row-level security.
+    await ensureRole(client, appRole, "login nosuperuser nobypassrls nocreatedb nocreaterole", appPassword);
+    // Worker role: background jobs doing system work for many users (DECISIONS.md D13).
+    await ensureRole(client, "glimpse_worker", "login nosuperuser bypassrls nocreatedb nocreaterole", workerPassword);
     await migrate(drizzle(client), { migrationsFolder });
   } finally {
     await client.end();
@@ -30,7 +37,7 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 if (isMain) {
   const ownerUrl = process.env.MIGRATION_DATABASE_URL;
   if (!ownerUrl) { console.error("MIGRATION_DATABASE_URL is required"); process.exit(1); }
-  runMigrations(ownerUrl, process.env.APP_DB_ROLE ?? "glimpse_app", process.env.APP_DB_PASSWORD)
+  runMigrations(ownerUrl, process.env.APP_DB_ROLE ?? "glimpse_app", process.env.APP_DB_PASSWORD, process.env.WORKER_DB_PASSWORD)
     .then(() => { console.log("Migrations applied."); })
     .catch((e) => { console.error(e); process.exit(1); });
 }

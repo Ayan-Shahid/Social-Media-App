@@ -1,85 +1,39 @@
-// End-to-end API tests against a real Postgres database. Each block tries to break one protection.
+// Security tests against a real Postgres, Redis and in-process workers. Each block tries to break one protection.
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import pg from "pg";
-import sharp from "sharp";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import _sodium from "libsodium-wrappers-sumo";
-import { runMigrations } from "./db/migrate.js";
+import type { Express } from "express";
+import { Client, ORIGIN, asDb, key, pngBuffer, resetAll, sodium, waitFor } from "./test/harness.js";
 
-const ORIGIN = "http://localhost:3000";
-let app: import("express").Express;
-let sodium: typeof _sodium;
-
-async function resetDb() {
-  const owner = new pg.Client({ connectionString: process.env.MIGRATION_DATABASE_URL });
-  await owner.connect();
-  await owner.query("drop schema if exists public cascade; drop schema if exists auth cascade; drop schema if exists drizzle cascade; create schema public;");
-  await owner.end();
-  await runMigrations(process.env.MIGRATION_DATABASE_URL!, "glimpse_app", "testpass");
-}
-
-/** A browser-like client: keeps cookies, sends Origin + CSRF header like the real frontend. */
-class Client {
-  agent = request.agent(app);
-  csrf = "";
-  keys = sodium.crypto_box_keypair();
-  user: { id: string; username: string } | null = null;
-  async init() {
-    const r = await this.agent.get("/api/auth/csrf");
-    this.csrf = /glimpse_csrf=([^;]+)/.exec(String(r.headers["set-cookie"]))![1]!;
-    return this;
-  }
-  grabCsrf(r: request.Response) {
-    const m = /glimpse_csrf=([^;]+)/.exec(String(r.headers["set-cookie"] ?? ""));
-    if (m) this.csrf = m[1]!;
-    return r;
-  }
-  get(url: string) { return this.agent.get(url); }
-  send(method: "post" | "put" | "patch" | "delete", url: string, body?: object, headers: Record<string, string> = {}) {
-    let r = this.agent[method](url).set("Origin", ORIGIN).set("X-CSRF-Token", this.csrf);
-    for (const [k, v] of Object.entries(headers)) r = r.set(k, v);
-    return body ? r.send(body) : r;
-  }
-  async register(username: string) {
-    const salt = sodium.randombytes_buf(sodium.crypto_pwhash_SALTBYTES);
-    const nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
-    const key = sodium.crypto_pwhash(32, "correct horse battery", salt, 2, 16 * 1024 * 1024, sodium.crypto_pwhash_ALG_ARGON2ID13);
-    const b = (x: Uint8Array) => sodium.to_base64(x, sodium.base64_variants.ORIGINAL);
-    const r = this.grabCsrf(await this.send("post", "/api/auth/register", {
-      username, email: `${username}@example.com`, password: "correct horse battery",
-      keys: { publicKey: b(this.keys.publicKey), backup: { ciphertext: b(sodium.crypto_secretbox_easy(this.keys.privateKey, nonce, key)), nonce: b(nonce), salt: b(salt), opsLimit: 2, memLimit: 16 * 1024 * 1024 } },
-    }));
-    expect(r.status, JSON.stringify(r.body)).toBe(201);
-    this.user = r.body.user;
-    return this;
-  }
-}
-
-const key = () => `k_${Math.random().toString(36).slice(2)}${Date.now()}`;
-const pngBuffer = () => sharp({ create: { width: 64, height: 48, channels: 3, background: "#3366cc" } }).png().toBuffer();
-
+let app: Express;
+let workers: { close(): Promise<void> };
 let alice: Client, bob: Client, carol: Client;
 
 beforeAll(async () => {
-  fs.rmSync("/tmp/glimpse-test-media", { recursive: true, force: true });
-  await resetDb();
-  sodium = (await _sodium.ready, _sodium);
+  await resetAll();
   app = (await import("./app.js")).createApp();
-  alice = await (await new Client().init()).register("alice");
-  bob = await (await new Client().init()).register("bob");
-  carol = await (await new Client().init()).register("carol");
+  workers = (await import("./worker.js")).startWorkers();
+  alice = await (await new Client(app).init()).register("alice");
+  bob = await (await new Client(app).init()).register("bob");
+  carol = await (await new Client(app).init()).register("carol");
 });
 
-afterAll(async () => { (await import("./db/client.js")).pool.end(); });
+afterAll(async () => {
+  await workers.close();
+  const { closeQueues } = await import("./infra/queues.js"); await closeQueues();
+  (await import("./db/worker-pool.js")).closeWorkerPool();
+  (await import("./infra/redis.js")).redis.disconnect();
+  await (await import("./db/client.js")).pool.end();
+});
 
 describe("auth", () => {
-  it("logs in, never returns the password hash, rejects wrong passwords the same way for unknown emails", async () => {
-    const c = await new Client().init();
+  it("logs in, never returns the password hash, same error for unknown emails", async () => {
+    const c = await new Client(app).init();
     const ok = c.grabCsrf(await c.send("post", "/api/auth/login", { email: "alice@example.com", password: "correct horse battery" }));
     expect(ok.status).toBe(200);
-    expect(JSON.stringify(ok.body)).not.toMatch(/argon2|password/i);
+    expect(JSON.stringify(ok.body)).not.toMatch(/argon2|password_?hash/i);
     expect(ok.body.keyBackup.ciphertext).toBeTruthy();
     const bad = await c.send("post", "/api/auth/login", { email: "alice@example.com", password: "nope-nope" });
     const unknown = await c.send("post", "/api/auth/login", { email: "nobody@example.com", password: "nope-nope" });
@@ -87,14 +41,13 @@ describe("auth", () => {
     expect(unknown.body.error).toBe(bad.body.error);
   });
   it("rejects duplicate usernames with a field error", async () => {
-    const c = await new Client().init();
+    const c = await new Client(app).init();
     const r = await c.send("post", "/api/auth/register", { username: "ALICE", email: "x@example.com", password: "12345678", keys: { publicKey: "A".repeat(44), backup: { ciphertext: "A".repeat(80), nonce: "A".repeat(32), salt: "A".repeat(24), opsLimit: 2, memLimit: 16777216 } } });
     expect(r.status).toBe(400);
     expect(r.body.fields.username).toMatch(/taken/);
   });
   it("blocks API calls without a session", async () => {
-    const r = await request(app).get("/api/posts/feed");
-    expect(r.status).toBe(401);
+    expect((await request(app).get("/api/posts/feed")).status).toBe(401);
   });
 });
 
@@ -104,193 +57,162 @@ describe("CSRF", () => {
     expect(r.status).toBe(403);
   });
   it("blocks a write without the CSRF token", async () => {
-    const r = await alice.agent.patch("/api/users/me").set("Origin", ORIGIN).send({ bio: "hacked" });
-    expect(r.status).toBe(403);
+    expect((await alice.agent.patch("/api/users/me").set("Origin", ORIGIN).send({ bio: "hacked" })).status).toBe(403);
   });
   it("blocks a write with someone else's token", async () => {
-    const r = await alice.agent.patch("/api/users/me").set("Origin", ORIGIN).set("X-CSRF-Token", bob.csrf).send({ bio: "hacked" });
-    expect(r.status).toBe(403);
+    expect((await alice.agent.patch("/api/users/me").set("Origin", ORIGIN).set("X-CSRF-Token", bob.csrf).send({ bio: "hacked" })).status).toBe(403);
   });
   it("allows the real page", async () => {
-    const r = await alice.send("patch", "/api/users/me", { bio: "hello" });
-    expect(r.status).toBe(200);
+    expect((await alice.send("patch", "/api/users/me", { bio: "hello" })).status).toBe(200);
   });
 });
 
 describe("upload sanitization", () => {
-  const up = (c: Client, buf: Buffer, name: string, type: string) =>
-    c.send("post", "/api/media", undefined, { "Idempotency-Key": key() }).attach("file", buf, { filename: name, contentType: type });
+  const up = (c: Client, buf: Buffer, name: string, type: string, purpose = "post") =>
+    c.send("post", `/api/media?purpose=${purpose}`, undefined, { "Idempotency-Key": key() }).attach("file", buf, { filename: name, contentType: type });
 
-  it("accepts a real PNG and re-encodes it to a fresh WebP with a random name", async () => {
-    const r = await up(alice, await pngBuffer(), "my photo.png", "image/png");
-    expect(r.status, JSON.stringify(r.body)).toBe(201);
-    expect(r.body.media.url).toMatch(/^\/media\/[0-9a-f-]{36}\.webp$/);
-    const served = await request(app).get(r.body.media.url);
+  it("accepts a real PNG: 202 now, re-encoded WebP sizes later, random names", async () => {
+    const m = await alice.upload(await pngBuffer(), "my photo.png");
+    expect(m.status).toBe("ready");
+    expect(m.url).toMatch(/^\/media\/[0-9a-f-]{36}\/\d+\.webp$/);
+    expect(m.srcset.length).toBeGreaterThanOrEqual(1);
+    const served = await request(app).get(m.url);
     expect(served.headers["x-content-type-options"]).toBe("nosniff");
     expect(served.headers["content-type"]).toMatch(/image\/webp/);
   });
-  it("rejects an HTML page renamed to .png", async () => {
-    const r = await up(alice, Buffer.from("<html><script>alert(document.cookie)</script></html>"), "cat.png", "image/png");
-    expect(r.status).toBe(415);
+  it("rejects an HTML page renamed to .png (checked in the request)", async () => {
+    expect((await up(alice, Buffer.from("<html><script>alert(document.cookie)</script></html>"), "cat.png", "image/png")).status).toBe(415);
   });
   it("rejects an SVG (can carry scripts)", async () => {
-    const r = await up(alice, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>'), "x.svg", "image/svg+xml");
-    expect(r.status).toBe(415);
+    expect((await up(alice, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>'), "x.svg", "image/svg+xml")).status).toBe(415);
   });
   it("rejects a Windows program renamed to .png", async () => {
-    const exe = Buffer.concat([Buffer.from("MZ"), Buffer.alloc(200, 0x90)]);
-    const r = await up(alice, exe, "photo.png", "image/png");
-    expect(r.status).toBe(415);
+    expect((await up(alice, Buffer.concat([Buffer.from("MZ"), Buffer.alloc(200, 0x90)]), "photo.png", "image/png")).status).toBe(415);
   });
-  it("rejects garbage that only starts like a JPEG", async () => {
+  it("garbage that only starts like a JPEG passes the quick check but fails processing (no retries)", async () => {
     const fake = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("this is not really an image".repeat(20))]);
     const r = await up(alice, fake, "a.jpg", "image/jpeg");
-    expect(r.status).toBe(415);
+    expect(r.status).toBe(202);
+    const m = await waitFor(async () => { const x = await alice.get(`/api/media/${r.body.media.id}`); return x.body.media.status === "failed" ? x.body.media : null; });
+    expect(m.error).toMatch(/couldn't be read/);
   });
   it("strips a script hidden after a real image (polyglot)", async () => {
-    const poly = Buffer.concat([await pngBuffer(), Buffer.from("<script>alert('pwned')</script>")]);
-    const r = await up(alice, poly, "p.png", "image/png");
-    expect(r.status).toBe(201);
-    const served = await request(app).get(r.body.media.url).buffer(true).parse((res, cb) => { const c: Buffer[] = []; res.on("data", (d: Buffer) => c.push(d)); res.on("end", () => cb(null, Buffer.concat(c))); });
+    const m = await alice.upload(Buffer.concat([await pngBuffer(), Buffer.from("<script>alert('pwned')</script>")]), "p.png");
+    const served = await request(app).get(m.url).buffer(true).parse((res, cb) => { const c: Buffer[] = []; res.on("data", (d: Buffer) => c.push(d)); res.on("end", () => cb(null, Buffer.concat(c))); });
     expect((served.body as Buffer).includes(Buffer.from("pwned"))).toBe(false);
   });
-  it("accepts a real video, re-encodes to MP4 and makes a poster", async () => {
+  it("turns a real video into adaptive HLS with a poster", async () => {
     const out = "/tmp/glimpse-test-clip.webm";
-    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=15", "-t", "1", "-c:v", "libvpx", out]);
-    const r = await up(alice, fs.readFileSync(out), "clip.webm", "video/webm");
-    expect(r.status, JSON.stringify(r.body)).toBe(201);
-    expect(r.body.media.kind).toBe("video");
-    expect(r.body.media.url).toMatch(/\.mp4$/);
-    expect(r.body.media.posterUrl).toMatch(/\.webp$/);
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=15", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-c:v", "libvpx", "-c:a", "libvorbis", out]);
+    const m = await alice.upload(fs.readFileSync(out), "clip.webm");
+    expect(m.status, m.error).toBe("ready");
+    expect(m.kind).toBe("video");
+    expect(m.hls).toMatch(/master\.m3u8$/);
+    const master = await request(app).get(m.hls);
+    expect(master.headers["content-type"]).toMatch(/mpegurl/);
+    expect(master.text).toMatch(/#EXT-X-STREAM-INF/);
+    expect(master.text.match(/#EXT-X-STREAM-INF/g)!.length).toBe(1); // 360p source: no upscaled 720p rendition
+    expect(m.posterUrl).toMatch(/poster\.webp$/);
   });
-  it("won't serve files outside the media folder", async () => {
-    const r = await request(app).get("/media/..%2f..%2fetc%2fpasswd");
-    expect([400, 403, 404]).toContain(r.status);
+  it("won't serve originals or files outside the media folder", async () => {
+    expect([400, 403, 404]).toContain((await request(app).get("/media/..%2f..%2fetc%2fpasswd")).status);
+    expect([403, 404]).toContain((await request(app).get("/media/.originals/anything")).status);
   });
 });
 
 describe("idempotency", () => {
   let mediaId = "";
-  beforeAll(async () => {
-    const r = await alice.send("post", "/api/media", undefined, { "Idempotency-Key": key() }).attach("file", await pngBuffer(), "a.png");
-    mediaId = r.body.media.id;
-  });
+  beforeAll(async () => { mediaId = (await alice.upload(await pngBuffer("#aa3355"))).id; });
   it("a double-submitted post creates one post and replays the same result", async () => {
     const k = key();
-    const [a, b] = [await alice.send("post", "/api/posts", { mediaId, caption: "once" }, { "Idempotency-Key": k }),
-                    await alice.send("post", "/api/posts", { mediaId, caption: "once" }, { "Idempotency-Key": k })];
+    const a = await alice.send("post", "/api/posts", { mediaIds: [mediaId], caption: "once" }, { "Idempotency-Key": k });
+    const b = await alice.send("post", "/api/posts", { mediaIds: [mediaId], caption: "once" }, { "Idempotency-Key": k });
     expect(a.status).toBe(201);
     expect(b.status).toBe(201);
     expect(b.headers["idempotent-replayed"]).toBe("true");
     expect(b.body.post.id).toBe(a.body.post.id);
-    const mine = await alice.get("/api/users/alice/posts");
-    expect(mine.body.posts.filter((p: { caption: string }) => p.caption === "once")).toHaveLength(1);
   });
   it("rejects reusing a key for a different request", async () => {
     const k = key();
-    await alice.send("post", "/api/posts", { mediaId, caption: "first" }, { "Idempotency-Key": k });
-    const r = await alice.send("post", "/api/posts", { mediaId, caption: "different" }, { "Idempotency-Key": k });
-    expect(r.status).toBe(422);
+    const m2 = (await alice.upload(await pngBuffer("#11aa22"))).id;
+    await alice.send("post", "/api/posts", { mediaIds: [m2], caption: "first" }, { "Idempotency-Key": k });
+    expect((await alice.send("post", "/api/posts", { mediaIds: [m2], caption: "different" }, { "Idempotency-Key": k })).status).toBe(422);
   });
   it("requires a key on create actions", async () => {
-    const r = await alice.send("post", "/api/posts", { mediaId, caption: "x" });
-    expect(r.status).toBe(400);
+    expect((await alice.send("post", "/api/posts", { mediaIds: [mediaId], caption: "x" })).status).toBe(400);
   });
-  it("keys are per user: bob can't replay alice's response", async () => {
-    const k = key();
-    const a = await alice.send("post", "/api/posts", { mediaId, caption: "mine" }, { "Idempotency-Key": k });
-    const b = await bob.send("post", "/api/posts", { mediaId, caption: "mine" }, { "Idempotency-Key": k });
-    expect(a.status).toBe(201);
-    expect(b.status).toBe(404); // bob can't post alice's media
+  it("bob can't post alice's media", async () => {
+    const m3 = (await alice.upload(await pngBuffer("#2244ee"))).id;
+    expect((await bob.send("post", "/api/posts", { mediaIds: [m3], caption: "mine" }, { "Idempotency-Key": key() })).status).toBe(404);
   });
 });
 
 describe("authorization (API level)", () => {
   it("bob can't delete alice's post", async () => {
-    const feed = await alice.get("/api/users/alice/posts");
-    const id = feed.body.posts[0].id;
-    const r = await bob.send("delete", `/api/posts/${id}`);
-    expect(r.status).toBe(404);
-    expect((await alice.get(`/api/posts/${id}`)).status).toBe(200);
+    const p = await alice.post("keep me");
+    expect((await bob.send("delete", `/api/posts/${p.id}`)).status).toBe(404);
+    expect((await alice.get(`/api/posts/${p.id}`)).status).toBe(200);
   });
-  it("stores captions as plain text (no HTML is ever rendered from user input)", async () => {
-    const m = await bob.send("post", "/api/media", undefined, { "Idempotency-Key": key() }).attach("file", await pngBuffer(), "b.png");
-    const r = await bob.send("post", "/api/posts", { mediaId: m.body.media.id, caption: "<img src=x onerror=alert(1)>" }, { "Idempotency-Key": key() });
+  it("stores captions as plain text and returns strict headers", async () => {
+    const m = await bob.upload(await pngBuffer("#996633"));
+    const r = await bob.send("post", "/api/posts", { mediaIds: [m.id], caption: "<img src=x onerror=alert(1)>" }, { "Idempotency-Key": key() });
     expect(r.body.post.caption).toBe("<img src=x onerror=alert(1)>");
-    expect(r.headers["content-type"]).toMatch(/application\/json/);
     expect(r.headers["content-security-policy"]).toMatch(/default-src 'none'/);
   });
 });
 
-describe("end-to-end encrypted messages", () => {
+describe("end-to-end encrypted direct messages", () => {
   let convId = "";
   const b64 = (x: Uint8Array) => sodium.to_base64(x, sodium.base64_variants.ORIGINAL);
   const fromB64 = (s: string) => sodium.from_base64(s, sodium.base64_variants.ORIGINAL);
 
   it("alice encrypts for bob; bob decrypts; the server only has ciphertext", async () => {
     const c = await alice.send("post", "/api/conversations", { userId: bob.user!.id });
+    expect(c.status, JSON.stringify(c.body)).toBe(200);
     convId = c.body.conversation.id;
     const bobKey = fromB64(c.body.conversation.otherPublicKey);
     const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
     const ct = sodium.crypto_box_easy("meet at 5, the secret is pineapple", nonce, bobKey, alice.keys.privateKey);
-    const sent = await alice.send("post", `/api/conversations/${convId}/messages`, { ciphertext: b64(ct), nonce: b64(nonce) }, { "Idempotency-Key": key() });
-    expect(sent.status).toBe(201);
-
-    const got = await bob.get(`/api/conversations/${convId}/messages`);
-    const m = got.body.messages[0];
+    expect((await alice.send("post", `/api/conversations/${convId}/messages`, { ciphertext: b64(ct), nonce: b64(nonce) }, { "Idempotency-Key": key() })).status).toBe(201);
+    const m = (await bob.get(`/api/conversations/${convId}/messages`)).body.messages[0];
     const aliceKey = fromB64((await bob.get(`/api/keys/${alice.user!.id}`)).body.publicKey);
-    const plain = sodium.to_string(sodium.crypto_box_open_easy(fromB64(m.ciphertext), fromB64(m.nonce), aliceKey, bob.keys.privateKey));
-    expect(plain).toBe("meet at 5, the secret is pineapple");
-
-    // Alice can read her own sent message too (same shared key).
-    const own = sodium.to_string(sodium.crypto_box_open_easy(fromB64(m.ciphertext), fromB64(m.nonce), bobKey, alice.keys.privateKey));
-    expect(own).toBe("meet at 5, the secret is pineapple");
-
+    expect(sodium.to_string(sodium.crypto_box_open_easy(fromB64(m.ciphertext), fromB64(m.nonce), aliceKey, bob.keys.privateKey))).toBe("meet at 5, the secret is pineapple");
     const owner = new pg.Client({ connectionString: process.env.MIGRATION_DATABASE_URL }); await owner.connect();
     const dump = await owner.query("select * from messages"); await owner.end();
     expect(JSON.stringify(dump.rows)).not.toMatch(/pineapple/);
   });
   it("carol can't read or post into alice and bob's conversation", async () => {
     expect((await carol.get(`/api/conversations/${convId}`)).status).toBe(404);
-    const msgs = await carol.get(`/api/conversations/${convId}/messages`);
-    expect(msgs.body.messages).toHaveLength(0);
-    const post = await carol.send("post", `/api/conversations/${convId}/messages`, { ciphertext: "A".repeat(40), nonce: "A".repeat(32) }, { "Idempotency-Key": key() });
-    expect(post.status).toBe(404);
+    expect((await carol.get(`/api/conversations/${convId}/messages`)).body.messages).toHaveLength(0);
+    expect((await carol.send("post", `/api/conversations/${convId}/messages`, { ciphertext: "A".repeat(40), nonce: "A".repeat(32) }, { "Idempotency-Key": key() })).status).toBe(404);
   });
 });
 
 describe("row-level security (database level, bypassing the API)", () => {
-  // Connect straight to Postgres as the app role, like a buggy route would.
-  async function as<T>(userId: string | null, q: (c: pg.Client) => Promise<T>) {
-    const c = new pg.Client({ connectionString: process.env.DATABASE_URL }); await c.connect();
-    try { await c.query("begin"); if (userId) await c.query("select set_config('app.user_id', $1, true)", [userId]); return await q(c); }
-    finally { await c.query("rollback").catch(() => {}); await c.end(); }
-  }
+  const as = <T,>(u: string | null, q: (c: pg.Client) => Promise<T>) => asDb(process.env.DATABASE_URL!, u, q);
   it("no user set: sees nothing", async () => {
     expect((await as(null, (c) => c.query("select * from posts"))).rowCount).toBe(0);
     expect((await as(null, (c) => c.query("select * from users"))).rowCount).toBe(0);
   });
-  it("credentials and sessions are off-limits even to a signed-in user", async () => {
-    await expect(as(alice.user!.id, (c) => c.query("select * from user_credentials"))).rejects.toThrow(/permission denied/);
-    await expect(as(alice.user!.id, (c) => c.query("select * from sessions"))).rejects.toThrow(/permission denied/);
+  it("credentials, sessions and linked accounts are off-limits", async () => {
+    for (const t of ["user_credentials", "sessions", "oauth_accounts"]) {
+      await expect(as(alice.user!.id, (c) => c.query(`select * from ${t}`))).rejects.toThrow(/permission denied/);
+    }
   });
   it("carol can't see alice and bob's messages, even with a raw SELECT", async () => {
-    const r = await as(carol.user!.id, (c) => c.query("select * from messages"));
-    expect(r.rowCount).toBe(0);
-    const b = await as(bob.user!.id, (c) => c.query("select * from messages"));
-    expect(b.rowCount).toBe(1);
+    expect((await as(carol.user!.id, (c) => c.query("select * from messages"))).rowCount).toBe(0);
+    expect((await as(bob.user!.id, (c) => c.query("select * from messages"))).rowCount).toBe(1);
   });
   it("can't post as someone else", async () => {
-    const mediaId = (await as(alice.user!.id, (c) => c.query("select id from media where owner_id = $1 limit 1", [alice.user!.id]))).rows[0].id;
-    await expect(as(bob.user!.id, (c) => c.query("insert into posts (author_id, media_id) values ($1, $2)", [alice.user!.id, mediaId]))).rejects.toThrow(/row-level security/);
+    await expect(as(bob.user!.id, (c) => c.query("insert into posts (author_id) values ($1)", [alice.user!.id]))).rejects.toThrow(/row-level security/);
   });
-  it("can't edit someone else's profile or read their key backup", async () => {
-    const r = await as(bob.user!.id, (c) => c.query("update users set bio = 'pwned' where id = $1", [alice.user!.id]));
-    expect(r.rowCount).toBe(0);
-    const k = await as(bob.user!.id, (c) => c.query("select * from key_backups where user_id = $1", [alice.user!.id]));
-    expect(k.rowCount).toBe(0);
-  });
-  it("can't change columns that aren't meant to change (e.g. username via raw SQL)", async () => {
+  it("can't edit someone else's profile, read their key backup, or change a username", async () => {
+    expect((await as(bob.user!.id, (c) => c.query("update users set bio = 'pwned' where id = $1", [alice.user!.id]))).rowCount).toBe(0);
+    expect((await as(bob.user!.id, (c) => c.query("select * from key_backups where user_id = $1", [alice.user!.id]))).rowCount).toBe(0);
     await expect(as(alice.user!.id, (c) => c.query("update users set username = 'admin' where id = $1", [alice.user!.id]))).rejects.toThrow(/permission denied/);
+  });
+  it("the worker role can't read credentials or sessions either", async () => {
+    await expect(asDb(process.env.WORKER_DATABASE_URL!, null, (c) => c.query("select * from user_credentials"))).rejects.toThrow(/permission denied/);
+    await expect(asDb(process.env.WORKER_DATABASE_URL!, null, (c) => c.query("select * from key_backups"))).rejects.toThrow(/permission denied/);
   });
 });

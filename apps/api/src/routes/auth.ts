@@ -2,12 +2,15 @@ import { Router } from "express";
 import { sql, eq } from "drizzle-orm";
 import { z } from "zod";
 import { hash, verify } from "@node-rs/argon2";
-import rateLimit from "express-rate-limit";
+import { limiter } from "../lib/limits.js";
+import { finishLogin, googleEnabled, startLogin, usernameFrom } from "../services/google.js";
+import { secureCookies } from "../config.js";
 import { anonymous, asUser } from "../db/client.js";
 import { keyBackups, publicKeys } from "../db/schema.js";
 import { badRequest, HttpError, parse, unauthorized } from "../lib/http.js";
 import { endSession, setCsrfCookie, startSession } from "../middleware/session.js";
 import { getPublicUser } from "./users.js";
+import { isAdmin } from "./ops.js";
 
 export const authRouter = Router();
 
@@ -38,8 +41,8 @@ const registerSchema = z.object({
 
 const loginSchema = z.object({ email: z.string().trim().max(200), password: z.string().max(200) });
 
-const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many attempts. Try again in a few minutes." } });
-const registerLimiter = rateLimit({ windowMs: 60 * 60_000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many sign-ups from this network. Try later." } });
+const loginLimiter = limiter("login", 15 * 60_000, 10, "Too many attempts. Try again in a few minutes.");
+const registerLimiter = limiter("register", 60 * 60_000, 10, "Too many sign-ups from this network. Try later.");
 
 /** Gives the page a CSRF cookie before its first POST (login / register). */
 authRouter.get("/csrf", (_req, res) => {
@@ -94,8 +97,12 @@ authRouter.post("/logout", async (req, res) => {
 authRouter.get("/me", async (req, res) => {
   if (!req.userId) throw unauthorized();
   const userId = req.userId;
-  const user = await asUser(userId, (tx) => getPublicUser(tx, userId));
-  res.json({ user });
+  const [user, backup] = await asUser(userId, async (tx) => [
+    await getPublicUser(tx, userId),
+    (await tx.select({ kind: keyBackups.kind }).from(keyBackups).where(eq(keyBackups.userId, userId)))[0] ?? null,
+  ] as const);
+  // chatKeys: how this account's message key is protected ("password", "passcode" for Google users, or null = not set up yet)
+  res.json({ user, chatKeys: backup?.kind ?? null, isAdmin: await isAdmin(userId) });
 });
 
 /** The encrypted private-key backup. Only its owner can read it (RLS). Used to unlock chat on a new device. */
@@ -108,5 +115,48 @@ authRouter.get("/key-backup", async (req, res) => {
 
 function stripBackup(b: typeof keyBackups.$inferSelect | undefined) {
   if (!b) return null;
-  return { ciphertext: b.ciphertext, nonce: b.nonce, salt: b.salt, opsLimit: b.opsLimit, memLimit: b.memLimit };
+  return { ciphertext: b.ciphertext, nonce: b.nonce, salt: b.salt, opsLimit: b.opsLimit, memLimit: b.memLimit, kind: b.kind };
 }
+
+// ---------- Sign in with Google ----------
+
+const OAUTH_COOKIE = secureCookies ? "__Host-glimpse_oauth" : "glimpse_oauth";
+const safeNext = (n: unknown) => (typeof n === "string" && n.startsWith("/") && !n.startsWith("//") ? n : "/");
+
+authRouter.get("/providers", (_req, res) => { res.json({ google: googleEnabled() }); });
+
+authRouter.get("/google/start", limiter("oauth", 15 * 60_000, 30, "Too many attempts."), async (req, res) => {
+  if (!googleEnabled()) throw new HttpError(404, "Google sign-in isn't set up.");
+  const { url, state } = await startLogin(safeNext(req.query.next));
+  res.cookie(OAUTH_COOKIE, state, { httpOnly: true, secure: secureCookies, sameSite: "lax", path: "/", maxAge: 600_000 });
+  res.redirect(302, url);
+});
+
+authRouter.get("/google/callback", async (req, res) => {
+  const fail = (msg: string) => res.redirect(302, `/login?error=${encodeURIComponent(msg)}`);
+  res.clearCookie(OAUTH_COOKIE, { path: "/" });
+  if (typeof req.query.error === "string") return fail("Google sign-in was cancelled.");
+  if (typeof req.query.code !== "string" || typeof req.query.state !== "string") return fail("Sign-in failed. Try again.");
+  let id;
+  try { id = await finishLogin(req.query.code, req.query.state, req.cookies?.[OAUTH_COOKIE]); }
+  catch (e) { return fail(e instanceof HttpError ? e.message : "Sign-in failed. Try again."); }
+
+  const userId = await anonymous(async (tx) => {
+    const found = await tx.execute<{ id: string | null }>(sql`select auth.find_oauth('google', ${id.sub}) as id`);
+    if (found.rows[0]?.id) return { id: found.rows[0].id, isNew: false };
+    // Link to an existing account ONLY when Google has verified the email. Otherwise anyone could
+    // create a Google account with someone else's unverified address and take over their account.
+    if (id.email && id.emailVerified) {
+      const byEmail = await tx.execute<{ id: string | null }>(sql`select auth.find_user_by_email(${id.email}) as id`);
+      if (byEmail.rows[0]?.id) {
+        await tx.execute(sql`select auth.link_oauth('google', ${id.sub}, ${byEmail.rows[0].id}::uuid, ${id.email})`);
+        return { id: byEmail.rows[0].id, isNew: false };
+      }
+    }
+    const created = await tx.execute<{ id: string }>(sql`select auth.register_oauth(${usernameFrom(id)}, ${id.name}, 'google', ${id.sub}, ${id.emailVerified ? id.email : null}) as id`);
+    return { id: created.rows[0]!.id, isNew: true };
+  });
+  await startSession(res, userId.id, req.get("user-agent") ?? "");
+  res.redirect(302, userId.isNew ? "/?welcome=google" : id.next);
+});
+

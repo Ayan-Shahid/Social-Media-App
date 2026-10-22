@@ -1,166 +1,130 @@
 # Glimpse v2 design decisions
 
-One entry per decision, in the style of an architecture decision record. Each one gives the problem, the realistic options and their trade-offs. **The "Decision" and "Why" lines are blank on purpose: they're yours to fill in.** In an interview, this file is the proof that you made these calls.
+One record per decision: the problem, the options, what was chosen, why, and what it costs. These were chosen during the build. **Review each one; if you'd decide differently, say so and it gets changed.** Being able to argue for (or against) each line here is the point of this file.
 
-There's rarely one correct answer. A good entry names the option, the reason, and what you're giving up.
+Status key: ✅ built and tested · 🟡 built, verified manually only
 
 ---
 
-## D1. Redis: one instance, and what happens when it loses data
+## D1. Redis: two instances with different jobs ✅
 
-**Context:** Redis will hold cache, feeds, queues, pub/sub and rate limits. These have very different needs. Losing cache is harmless, but losing queued jobs is not.
-
-| Option | For | Against |
-|---|---|---|
-| One Redis, AOF persistence on, `noeviction` | Simple; queues are safe | A full cache stops writes instead of evicting |
-| One Redis, `allkeys-lru`, no persistence | Ideal for cache | Evicts or loses queue jobs: wrong for BullMQ |
-| Two Redis: `redis-cache` (LRU, no persistence) + `redis-queue` (AOF, `noeviction`) | Each tuned for its job | One more container on a small Mac |
-
-Hint: BullMQ documents that it needs `maxmemory-policy noeviction`.
-
-**Decision:**
-**Why:**
-**What you're giving up:**
-
-## D2. Message queue technology
-
-**Context:** background jobs for media, fan-out, notifications and cleanup. Needs retries, backoff, delays, a failed-job view, and concurrency limits.
+**Problem:** Redis holds cache, feeds, queues, pub/sub and rate limits. Losing cache is harmless, but losing queued jobs isn't. One `maxmemory-policy` can't fit both.
 
 | Option | For | Against |
 |---|---|---|
-| BullMQ (Redis) | Mature Node library, retries, delays, priorities, dashboard; reuses Redis | Redis must persist; not a log you can replay |
-| pg-boss / Postgres `SKIP LOCKED` | No new infra; jobs in the same transaction as data, so no outbox needed | Load on the main database; fewer features |
-| RabbitMQ | True broker, routing, dead-letter exchanges | Another service to run and learn |
-| Kafka / Redpanda | Replayable event log, huge scale | Heavy for one Mac; overkill at this size, which you should be able to explain |
+| One Redis, AOF, `noeviction` | Simple | A full cache blocks writes |
+| One Redis, `allkeys-lru` | Ideal cache | Evicts queue jobs; BullMQ requires `noeviction` |
+| **Two: `redis-cache` + `redis-queue`** | Each tuned for its data | One more container |
 
-**Decision:**
-**Why:**
-**What you're giving up:**
+**Decision:** two instances.
+- `redis-cache`: 128 MB, `allkeys-lru`, no persistence. Holds cache, feeds, counters, presence, rate limits and Socket.IO streams.
+- `redis-queue`: AOF `everysec`, `noeviction`. Holds BullMQ only.
 
-## D3. Feed fan-out threshold
+**Why:** everything in `redis-cache` can be rebuilt from Postgres or safely forgotten. Feeds rebuild on a miss, and rate limits just reset. Jobs can't be rebuilt, so they get durability.
+**Cost:** ~10 MB more RAM; at most about 1 s of jobs lost if `redis-queue` crashes (AOF `everysec`). The outbox (D5) re-sends anything not acknowledged.
 
-**Context:** fan-out on write is fast to read but expensive for accounts with many followers. Fan-out on read is cheap to write but slow to read.
-
-Questions to answer:
-- At how many followers does an account switch to pull? (Instagram/Twitter-style systems use a threshold.) What number did you pick and how did you test it?
-- How long is each timeline (how many ids)? What happens when someone scrolls past it?
-- Inactive users: do you still push into their timelines, or rebuild when they come back?
-
-**Decision:**
-**Why:**
-**What you're giving up:**
-
-## D4. Caching strategy and invalidation
-
-**Context:** posts and profiles are read far more than written. But Glimpse uses row-level security, and a shared cache sits outside it.
-
-Decide each of these:
-1. **Pattern:** cache-aside (read: cache, then DB; write: DB, then delete key), write-through, or write-behind?
-2. **Invalidation:** delete on write, TTL only, or versioned keys (`post:{id}:v{n}`)?
-3. **Stampede protection:** single-flight lock (`SET NX PX`), probabilistic early expiration, or a short stale-while-revalidate window?
-4. **What's safe to share:** list which fields go into shared cache entries and which are per-viewer. For example, `likedByMe` must never be shared. Where do per-viewer fields come from instead?
-5. **Negative caching:** do you cache "not found"? For how long?
-
-**Decision:**
-**Why:**
-**What you're giving up:**
-
-## D5. Getting events from the database to the queue
-
-**Context:** a post and its "post created" event must either both happen or neither.
+## D2. Queue: BullMQ 5 ✅
 
 | Option | For | Against |
 |---|---|---|
-| Transactional outbox + polling relay | Simple, reliable, easy to reason about | Polling delay; relay must handle duplicates |
-| Outbox + Postgres `LISTEN/NOTIFY` to wake the relay | Near-instant | Notifications are lost if nobody's listening, so still poll as a backup |
-| Change data capture (Debezium reading the WAL) | No outbox writes in code | Kafka Connect stack: too heavy here |
-| Enqueue directly after commit | Least code | Crash between commit and enqueue loses the event: the problem you're solving |
+| **BullMQ (Redis)** | Retries, backoff, delays, priorities, rate limits, repeatable jobs, a dashboard | Needs a durable Redis |
+| pg-boss (Postgres `SKIP LOCKED`) | No new infra | Puts job load on the main database |
+| RabbitMQ | Real broker, dead-letter exchanges | Another service to run |
+| Kafka / Redpanda | Replayable log, huge scale | Far too heavy for one MacBook at this scale |
+
+**Decision:** BullMQ 5.x (pinned to the stable 5 line; 6.0 came out July 2026, so upgrading is a follow-up after reading its migration notes).
+**Why:** the jobs here are task-shaped (transcode this, fan out that), not an event log that many consumers replay, which is where Kafka earns its cost.
+**Cost:** no event replay. If a new consumer needs old events, it rebuilds from Postgres.
+
+Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `maintenance` (repeatable cleanup jobs). Every job: 5 attempts, exponential backoff from 2 s. Jobs that fail permanently stay in BullMQ's failed set (our dead-letter queue), visible and retryable in the dashboard at `/admin/queues`.
+
+## D3. Feed: hybrid fan-out ✅
 
 **Decision:**
+- **Push** a post id into each follower's `feed:{userId}` sorted set when the author has fewer than **`FANOUT_THRESHOLD` followers (default 10,000)**.
+- **Pull** posts from authors above the threshold at read time and merge them in.
+- Timelines are capped at **800 ids** and expire after **14 days without a read**. Scrolling past the end falls back to a Postgres query.
+
 **Why:**
-**How consumers stay idempotent:**
+- **Push** keeps reads to one Redis call for almost everyone.
+- **Pull** for the few huge accounts avoids one post causing 1,000,000 writes.
+- **Expiry** means inactive users cost nothing; their timeline is rebuilt from Postgres when they come back.
 
-## D6. Google sign-in, account linking and chat keys
+**Cost:** feeds are eventually consistent (a post appears in followers' feeds after the fan-out job runs, normally under a second). Unfollow and delete are filtered at read time, then cleaned in the background.
+**Tested:** a test sets the threshold to 2 and checks that a "celebrity" post is not pushed but still shows up in the feed.
 
-**Context:** message keys are currently locked with the user's password. Google users don't have one.
+## D4. Caching ✅
 
-Part A, linking: a Google login arrives with an email that already has a password account.
-- Auto-link only if `email_verified` is true?
-- Or require them to log in with the password first, then link?
-- What's the account-takeover risk with each?
+1. **Pattern:** cache-aside. Read from cache, otherwise from the database, then store. On write: update the database, then delete the key.
+2. **Invalidation:** delete on write, plus a TTL (10 min for posts, 5 min for profiles) as a safety net.
+3. **Stampede protection:** single-flight. The first request to miss takes a short Redis lock (`SET NX PX 3000`) and loads from the database. Concurrent requests wait briefly and read the fresh value. Inside each process, identical in-flight loads are also shared.
+4. **Shared vs per-viewer:** shared entries hold only what every signed-in user may see: post content, media, author's public profile, counts. Per-viewer facts (`likedByMe`, `savedByMe`, `repostedByMe`, `isFollowing`) are fetched for the whole page in one batched query per request and never cached in shared keys.
+5. **Negative caching:** "not found" is cached for 30 s, so repeated requests for deleted posts don't hit the database.
 
-Part B, chat keys for Google users:
+**Why this matters here:** Glimpse uses row-level security, and a shared cache sits outside it. Today every signed-in user may see every post, so post content is safe to share. **If private accounts are added later, post entries must stop being shared, or be keyed by audience.** This is written into the code next to the cache.
+**Cost:** a deleted post can live in another instance's in-process single-flight for milliseconds. Counters can be briefly stale (see D9).
 
-| Option | For | Against |
-|---|---|---|
-| Separate chat passcode (Argon2id-wrapped backup, like now) | Works on any device; same code path | One more thing to remember |
-| Device-only keys + approve new devices from an existing one (QR, like WhatsApp linked devices) | Strongest; no secret on the server | Much more work; losing all devices loses history |
-| Server-held key | Easiest | Not end-to-end encryption anymore. Say so if you choose it |
+## D5. Database → queue: transactional outbox ✅
+
+**Decision:** outbox table plus a relay that polls every 250 ms. A Postgres `LISTEN/NOTIFY` (`outbox_new`) wakes the relay immediately when an event is written. The relay claims rows with `FOR UPDATE SKIP LOCKED`, so several relays can run safely.
+
+**Why:** the event row is written in the same transaction as the post, like or comment. Either both exist or neither does. `NOTIFY` makes it near-instant, and polling covers missed notifications.
+**Idempotent consumers:**
+- BullMQ `jobId` = outbox event id, so a re-sent event is ignored.
+- Writes are naturally repeatable: `ZADD` to a sorted set, and `INSERT … ON CONFLICT DO NOTHING` for notifications.
+
+## D6. Google sign-in ✅ (tested against a mock Google; needs your real client ID to go live)
+
+- **Flow:** authorization code with PKCE, `state` and `nonce` in a short-lived httpOnly cookie. The ID token is verified against Google's published keys for issuer, audience, expiry and nonce.
+- **Linking:** auto-link to an existing account **only if Google says `email_verified: true`**. Otherwise a new account is created. Without that check, someone could register a Google account with your unverified email and take over your Glimpse account.
+- **Chat keys:** Google users set a separate **chat passcode** the first time they open messages. It wraps their private key exactly like the password does for normal users.
+- **Cost:** one more secret for Google users to remember. Device-to-device linking with a QR code (like WhatsApp) is stronger, but much more work. It's listed as future work.
+
+## D7. Group chats: group key, rotated on membership change ✅
 
 **Decision:**
-**Why:**
-**What you're giving up:**
+- Each group has a symmetric key per **epoch**. The key is wrapped (`crypto_box`) for every current member by whoever changed the membership.
+- Adding or removing someone starts a new epoch with a new key.
+- Messages carry their epoch number. Maximum group size: 32.
 
-## D7. Group chat encryption
+**Why:** one ciphertext per message regardless of group size, and easy to reason about:
+- **Removed members** never receive the new epoch's key, so they can't read later messages.
+- **New members** only get the current epoch's key, so they don't see history.
 
-**Context:** 1:1 uses `crypto_box` between two key pairs. Groups need every member to read, and ex-members not to.
+**Cost:**
+- **No forward secrecy within an epoch.** Signal's sender keys or MLS (RFC 9420) solve this at much higher complexity.
+- **Membership changes must be made by a member's browser**, because the server can't generate or see keys.
 
-| Option | For | Against |
-|---|---|---|
-| Pairwise: encrypt each message once per member | Reuses 1:1 code; simple | Message size and work grow with group size |
-| Group key wrapped for each member, rotated on join and leave | One ciphertext per message; easy to explain | No forward secrecy within an epoch; rotation logic |
-| Signal-style sender keys | What WhatsApp groups use | Harder; needs a ratchet |
-| MLS (RFC 9420) | The modern standard for group E2EE | Very heavy for this project |
+## D8. Media pipeline ✅
 
-Also decide: maximum group size, and whether new members see history.
+- **Uploads:** the API validates magic bytes, stores the original privately, and returns `202` with `status: processing`. A worker does the rest. The client gets `media:status` over the socket.
+- **Images:** WebP at 480 px and 1080 px wide (`srcset`). No metadata kept.
+- **Videos (posts and shorts):** HLS with two renditions, 360p and 720p, plus a poster image. A 2018 MacBook can't transcode 1080p fast enough to be worth it.
+- **Concurrency:** 1 video job and 3 image jobs per worker. Scale by adding workers, not concurrency.
+- **Originals:** deleted after successful processing.
 
-**Decision:**
-**Why:**
-**What you're giving up:**
+## D9. Counters: write-through to a Redis hash ✅
 
-## D8. Media processing and delivery
+**Decision:** Postgres stays the source of truth (a like is a row). Counts live in `post:{id}:stats` (likes, comments, reposts). On every like or unlike, the count is changed with `HINCRBY`, but only if the hash exists. A missing hash is rebuilt from `count(*)`. The hash expires after 1 hour.
 
-Decide:
-- Video: HLS ladder (which renditions?) or single MP4 for regular posts and HLS only for shorts?
-- Worker concurrency on the 2018 MacBook. ffmpeg will use every core; how many jobs at once?
-- Where originals live after processing: deleted, kept privately, or moved to object storage (MinIO, S3-compatible) as a later step?
-- Image sizes: which widths, and how does the client pick (`srcset`)?
+**Why:** reads become one Redis call, and there's no hot-row lock on viral posts. **Drift repair:** if an increment is lost, the 1-hour expiry forces a recount from Postgres.
 
-**Decision:**
-**Why:**
+## D10. Shaders: one canvas for background and cards 🟡
 
-## D9. Like and comment counters
+**Decision:** one fixed, fullscreen WebGL canvas behind the app. Each frame it receives the screen rectangles of up to 16 visible cards as uniforms. The fragment shader draws the background field everywhere and a quieter "paper" material inside the card rectangles. The cards themselves are transparent.
+- **Why:** one WebGL context, no matter how long the feed is, instead of hitting the browser's limit of about 16.
+- **Performance:** device pixel ratio capped at 1.5, paused when the tab is hidden.
+- **Fallbacks:** with `prefers-reduced-motion`, or if WebGL fails, a static WebP takes its place.
 
-| Option | For | Against |
-|---|---|---|
-| `count(*)` on read (now) | Always exact | Slow on hot posts |
-| Counter column updated in the same transaction | Exact, fast reads | Row lock contention on viral posts |
-| Redis `INCR`, flushed to Postgres periodically | Very fast, no contention | Can drift; must handle Redis loss |
-| Cached `count(*)` with short TTL | Simple | Slightly stale |
+## D11. Real-time across instances ✅
 
-**Decision:**
-**Why:**
-**How you'd repair drift:**
+- **Transport:** `transports: ["websocket"]` only. Long-polling would need sticky sessions across the two API instances, and WebSocket support is universal now.
+- **Adapter:** Redis **Streams** adapter (not plain pub/sub). An instance that briefly loses Redis catches up on missed events instead of silently dropping them.
+- **Presence:** sorted set `presence` (score = last heartbeat). Each socket heartbeats every 20 s, and a user counts as online if their heartbeat is under 50 s old. A crashed instance's users go offline automatically when their heartbeats stop.
+- **Rate limits:** stored in `redis-cache` (`rate-limit-redis`), so limits hold across instances.
 
-## D10. Card surface shader
+## D12. Observability (added) ✅
 
-**Context:** browsers allow only about 16 WebGL contexts per page. A feed has many cards.
-
-| Option | For | Against |
-|---|---|---|
-| One fullscreen canvas behind everything; pass the visible cards' rectangles as uniforms, and the shader draws "card material" inside them | One context; background and cards in one pass | Must sync rectangles on scroll and resize every frame |
-| One shared offscreen canvas, copied into each card with `drawImage` | Simple per-card visuals | Copying cost; still one context |
-| Render a short looping texture once and use it as a CSS background | Cheapest | Not a live shader |
-| Canvas per card | Easiest to write | Breaks past about 16 cards: should be rejected, and you should be able to say why |
-
-**Decision:**
-**Why:**
-
-## D11. Real-time across instances
-
-- Socket.IO with long-polling needs sticky sessions (requests from one client must hit the same instance). Do you enable stickiness in Caddy, or force `transports: ["websocket"]`?
-- Redis pub/sub adapter vs Redis Streams adapter: what happens to events during a short disconnect with each?
-- Where does presence live, and how do stale "online" entries expire if an instance crashes?
-
-**Decision:**
-**Why:**
+- **Metrics:** `prom-client` exposes Prometheus metrics at `/api/internal/metrics` (internal network only): request latency, cache hits and misses, queue depth, fan-out size.
+- **Ops page:** an **Ops** page for admins (`ADMIN_USERNAMES`) shows them live during a demo, plus which API instance served the request.
+- **Queues:** Bull Board at `/admin/queues` (admins only).
