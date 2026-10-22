@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useInfinitePosts, LoadMore } from "@/components/Feed";
 import { Video } from "@/components/Media";
-import { LikeButton, RepostButton, SaveButton } from "@/components/PostCard";
+import { LikeButton, RepostButton, SaveButton, ShareButton } from "@/components/PostCard";
 import { RichText } from "@/components/RichText";
 import { Avatar, Empty, Spinner } from "@/components/ui";
 import { CommentIcon, SoundIcon } from "@/components/icons";
@@ -37,6 +37,7 @@ function Short({ post, muted, onToggleSound }: { post: Post; muted: boolean; onT
         <LikeButton post={post} big />
         <Link href={`/p/${post.id}`} className="flex flex-col items-center text-[12px] font-semibold text-white"><CommentIcon className="h-8 w-8" />{post.commentCount}</Link>
         <RepostButton post={post} big />
+        <ShareButton post={post} className="text-white drop-shadow" />
         <SaveButton post={post} big />
         <button onClick={onToggleSound} aria-label={muted ? "Unmute" : "Mute"} className="text-white"><SoundIcon filled={!muted} className="h-7 w-7" /></button>
       </div>

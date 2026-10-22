@@ -8,13 +8,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { api, ApiError, newIdempotencyKey } from "@/lib/api";
 import { clockTime, timeAgo } from "@/lib/dates";
-import {
-  decryptGroup, decryptMessage, encryptGroup, encryptMessage, newGroupKey, safetyCode, unwrapGroupKey, wrapGroupKey,
-} from "@/lib/e2ee";
+import { newGroupKey, safetyCode, wrapGroupKey } from "@/lib/e2ee";
+import { type Envelope, groupKeysQuery, open, rotate, sendEnvelope } from "@/lib/chat";
 import { usePresence } from "@/lib/realtime";
 import { useSession } from "@/lib/session";
 import type { Conversation, EncryptedMessage, User } from "@/lib/types";
 import { Button } from "./Button";
+import { MessageBody } from "./MessageBody";
 import { Avatar, Empty, ErrorText, Spinner } from "./ui";
 import { BackIcon, CloseIcon, LockIcon, PlusIcon, SendIcon, UsersIcon } from "./icons";
 
@@ -24,9 +24,9 @@ export function useConversations() {
   return useQuery({ queryKey: ["conversations"], queryFn: () => api<{ conversations: Conversation[] }>("/api/conversations").then((r) => r.conversations) });
 }
 
-const convName = (c: Conversation) => (c.kind === "group" ? c.title ?? "Group" : c.otherUser?.username ?? "Deleted user");
+export const convName = (c: Conversation) => (c.kind === "group" ? c.title ?? "Group" : c.otherUser?.username ?? "Deleted user");
 
-function GroupAvatar({ c, size }: { c: Conversation; size: number }) {
+export function GroupAvatar({ c, size }: { c: Conversation; size: number }) {
   const [a, b] = c.members.map((m) => m.user);
   return (
     <span className="relative inline-block shrink-0" style={{ width: size, height: size }}>
@@ -118,52 +118,14 @@ function KeyGate() {
   );
 }
 
-// ---------- group keys ----------
-
-const keyCache = new Map<string, string>(); // userId -> public key, for wrappers who have since left
-
-async function publicKeyOf(userId: string, conv: Conversation) {
-  const m = conv.members.find((x) => x.user.id === userId)?.publicKey;
-  if (m) return m;
-  if (!keyCache.has(userId)) keyCache.set(userId, (await api<{ publicKey: string }>(`/api/keys/${userId}`)).publicKey);
-  return keyCache.get(userId)!;
-}
-
-/** Unwraps my copy of each epoch's group key. */
+/** My unwrapped key for each epoch of a group. */
 function useGroupKeys(conv: Conversation | undefined, privateKey: Uint8Array | null) {
-  const enabled = conv?.kind === "group" && !!privateKey;
-  return useQuery({
-    queryKey: ["group-keys", conv?.id],
-    enabled,
-    queryFn: async () => {
-      const r = await api<{ keys: { epoch: number; wrappedBy: string; wrappedKey: string; nonce: string }[] }>(`/api/conversations/${conv!.id}/keys`);
-      const out = new Map<number, Uint8Array>();
-      for (const k of r.keys) {
-        const pk = await publicKeyOf(k.wrappedBy, conv!).catch(() => null);
-        const key = pk ? await unwrapGroupKey(k, pk, privateKey!) : null;
-        if (key) out.set(k.epoch, key);
-      }
-      return out;
-    },
-  });
-}
-
-/** Starts a new epoch with a fresh key wrapped for `memberIds` (also used for add/remove). */
-async function rotate(conv: Conversation, privateKey: Uint8Array, change: { add?: User[]; remove?: string[] } = {}) {
-  const remaining = conv.members.filter((m) => !change.remove?.includes(m.user.id)).map((m) => m.user.id);
-  const ids = [...new Set([...remaining, ...(change.add ?? []).map((u) => u.id)])];
-  const withKeys = await Promise.all(ids.map(async (userId) => ({ userId, publicKey: await publicKeyOf(userId, conv) })));
-  const key = await newGroupKey();
-  const wraps = await wrapGroupKey(key, withKeys, privateKey);
-  return api<{ epoch: number }>(`/api/conversations/${conv.id}/rotate`, {
-    method: "POST",
-    body: { expectedEpoch: conv.currentEpoch, add: (change.add ?? []).map((u) => u.id), remove: change.remove ?? [], wraps },
-  });
+  return useQuery({ ...(conv && privateKey ? groupKeysQuery(conv, privateKey) : { queryKey: ["group-keys", conv?.id], queryFn: async () => new Map<number, Uint8Array>() }), enabled: conv?.kind === "group" && !!privateKey });
 }
 
 // ---------- thread ----------
 
-type Pending = { key: string; text: string; failed?: boolean };
+type Pending = { key: string; env: Envelope; failed?: boolean };
 
 export function Thread({ id }: { id: string }) {
   const { me, privateKey, myPublicKey } = useSession();
@@ -174,7 +136,7 @@ export function Thread({ id }: { id: string }) {
   const c = conv.data;
   const isGroup = c?.kind === "group";
   const isOnline = usePresence(c?.otherUser ? [c.otherUser.id] : []);
-  const [plain, setPlain] = useState<Record<string, string | null>>({});
+  const [plain, setPlain] = useState<Record<string, Envelope | null>>({});
   const [pending, setPending] = useState<Pending[]>([]);
   const [text, setText] = useState("");
   const [code, setCode] = useState<string | null>(null);
@@ -189,14 +151,8 @@ export function Thread({ id }: { id: string }) {
     if (!isGroup && !theirKey) return;
     let cancelled = false;
     (async () => {
-      const out: Record<string, string | null> = {};
-      for (const m of msgs.data) {
-        if (plain[m.id] !== undefined && plain[m.id] !== null) { out[m.id] = plain[m.id]!; continue; }
-        if (isGroup) {
-          const k = m.epoch ? groupKeys.data!.get(m.epoch) : undefined;
-          out[m.id] = k ? await decryptGroup(m, k) : null;
-        } else out[m.id] = await decryptMessage(m, theirKey!, privateKey);
-      }
+      const out: Record<string, Envelope | null> = {};
+      for (const m of msgs.data) out[m.id] = plain[m.id] ? plain[m.id]! : await open(m, c, privateKey, groupKeys.data);
       if (!cancelled) setPlain(out);
     })();
     return () => { cancelled = true; };
@@ -212,44 +168,18 @@ export function Thread({ id }: { id: string }) {
     return fresh;
   }, [qc, id]);
 
-  async function encryptFor(textToSend: string, attempt = 0): Promise<{ ciphertext: string; nonce: string; epoch?: number }> {
-    if (!privateKey || !c) throw new Error("locked");
-    if (!isGroup) return encryptMessage(textToSend, theirKey!, privateKey);
-    let current = qc.getQueryData<Conversation>(["conversation", id]) ?? c;
-    // Someone left: they still know the current key, so the next sender starts a new epoch first.
-    if (current.needsRotation) {
-      await rotate(current, privateKey).catch((e) => { if (!(e instanceof ApiError && e.status === 409)) throw e; });
-      current = await refresh();
-    }
-    let keys = qc.getQueryData<Map<number, Uint8Array>>(["group-keys", id]);
-    if (!keys?.has(current.currentEpoch)) {
-      await qc.refetchQueries({ queryKey: ["group-keys", id] });
-      keys = qc.getQueryData<Map<number, Uint8Array>>(["group-keys", id]);
-    }
-    const k = keys?.get(current.currentEpoch);
-    if (!k) {
-      if (attempt > 0) throw new ApiError(409, "Couldn't get the group key.");
-      await refresh();
-      return encryptFor(textToSend, attempt + 1);
-    }
-    return { ...(await encryptGroup(textToSend, k)), epoch: current.currentEpoch };
-  }
-
-  async function send(item: Pending, attempt = 0) {
+  async function send(item: Pending) {
+    if (!privateKey || !c) return;
     setPending((p) => p.map((x) => (x.key === item.key ? { ...x, failed: false } : x)));
     try {
-      const enc = await encryptFor(item.text);
-      // The idempotency key stays the same across retries, so a message can never be stored twice.
-      const r = await api<{ message: EncryptedMessage }>(`/api/conversations/${id}/messages`, { method: "POST", body: enc, idempotencyKey: attempt ? `${item.key}r${attempt}` : item.key });
-      setPlain((p) => ({ ...p, [r.message.id]: item.text }));
-      qc.setQueryData<EncryptedMessage[]>(["messages", id], (old) => (old && !old.some((x) => x.id === r.message.id) ? [...old, r.message] : old));
+      const current = qc.getQueryData<Conversation>(["conversation", id]) ?? c;
+      const m = await sendEnvelope(qc, current, item.env, privateKey, item.key);
+      setPlain((p) => ({ ...p, [m.id]: item.env }));
       setPending((p) => p.filter((x) => x.key !== item.key));
-      qc.invalidateQueries({ queryKey: ["conversations"] });
+      if (current.kind === "group") qc.invalidateQueries({ queryKey: ["conversation", id] });
     } catch (e) {
-      // Group key changed under us (rotation by someone else): reload keys and re-encrypt once.
-      if (isGroup && e instanceof ApiError && e.status === 409 && attempt === 0) { await refresh(); return send(item, 1); }
       setPending((p) => p.map((x) => (x.key === item.key ? { ...x, failed: true } : x)));
-      if (e instanceof ApiError && e.status === 422) setPending((p) => p.filter((x) => x.key !== item.key));
+      if (e instanceof ApiError && (e.status === 422 || e.status === 403)) setPending((p) => p.filter((x) => x.key !== item.key));
     }
   }
 
@@ -325,16 +255,18 @@ export function Thread({ id }: { id: string }) {
                   {epochChanged && <p className="my-3 text-center text-[11px] tracking-wide text-graphite uppercase">New group key #{m.epoch}</p>}
                   {showName && <p className="mt-2 mb-0.5 ml-1 text-[12px] font-semibold text-graphite">{sender?.username ?? "Former member"}</p>}
                   <div className={clsx("flex", mine ? "justify-end" : "justify-start")}>
-                    <div className={clsx("rise max-w-[75%] rounded-2xl px-3.5 py-2 text-[15px] leading-snug", mine ? "bg-ink text-white" : "bg-white/80 ring-1 ring-rule")} title={clockTime(m.createdAt)}>
-                      {t === undefined ? "…" : t === null ? <em className="opacity-70">{isGroup ? "Sent before you joined, or with a key you don't have" : "Can't decrypt this message"}</em> : <span className="whitespace-pre-wrap break-words">{t}</span>}
-                    </div>
+                    {t ? <MessageBody env={t} mine={mine} time={clockTime(m.createdAt)} /> : (
+                      <div className={clsx("rise max-w-[75%] rounded-2xl px-3.5 py-2 text-[15px] leading-snug", mine ? "bubble-mine" : "bubble-theirs")} title={clockTime(m.createdAt)}>
+                        {t === undefined ? "…" : <em className="opacity-70">{isGroup ? "Sent before you joined, or with a key you don't have" : "Can't decrypt this message"}</em>}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
             })}
             {pending.map((p) => (
-              <div key={p.key} className="flex flex-col items-end">
-                <div className="max-w-[75%] rounded-2xl bg-ink/60 px-3.5 py-2 text-[15px] text-white"><span className="whitespace-pre-wrap break-words">{p.text}</span></div>
+              <div key={p.key} className="flex flex-col items-end opacity-60">
+                <MessageBody env={p.env} mine time="Sending…" />
                 {p.failed && <button onClick={() => send(p)} className="mt-1 text-[12px] font-semibold text-heart">Not sent. Tap to retry</button>}
               </div>
             ))}
@@ -349,7 +281,7 @@ export function Thread({ id }: { id: string }) {
           e.preventDefault();
           const t = text.trim();
           if (!t) return;
-          const item = { key: newIdempotencyKey(), text: t.slice(0, 4000) };
+          const item: Pending = { key: newIdempotencyKey(), env: { t: "text", text: t.slice(0, 4000) } };
           setPending((p) => [...p, item]); setText(""); send(item);
         }}>
           <textarea value={text} onChange={(e) => setText(e.target.value)} rows={1} maxLength={4000} placeholder="Message…" aria-label="Message"
@@ -366,7 +298,7 @@ export function Thread({ id }: { id: string }) {
 
 // ---------- people picker ----------
 
-function PeoplePicker({ exclude, picked, onPick }: { exclude: string[]; picked: User[]; onPick: (u: User) => void }) {
+export function PeoplePicker({ exclude, picked, onPick }: { exclude: string[]; picked: User[]; onPick: (u: User) => void }) {
   const [q, setQ] = useState("");
   const res = useQuery({
     queryKey: ["user-search", q],
@@ -406,7 +338,7 @@ function Chips({ users, onRemove }: { users: User[]; onRemove: (id: string) => v
   );
 }
 
-function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", k);

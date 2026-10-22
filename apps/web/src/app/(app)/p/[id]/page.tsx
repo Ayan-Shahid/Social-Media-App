@@ -8,7 +8,7 @@ import { api, ApiError, newIdempotencyKey } from "@/lib/api";
 import { timeAgo } from "@/lib/dates";
 import type { Comment, Post } from "@/lib/types";
 import { useSession } from "@/lib/session";
-import { LikeButton, PostMedia, RepostButton, SaveButton } from "@/components/PostCard";
+import { LikeButton, PostMedia, RepostButton, SaveButton, ShareButton } from "@/components/PostCard";
 import { RichText } from "@/components/RichText";
 import { Button } from "@/components/Button";
 import { Avatar, Empty, ErrorText, Spinner, UserLink } from "@/components/ui";
@@ -64,7 +64,7 @@ export default function PostPage({ params }: { params: Promise<{ id: string }> }
           {comments.data?.map((c) => <CommentRow key={c.id} c={c} postId={id} />)}
         </ul>
         <div className="border-t border-rule pt-4">
-          <div className="flex items-center gap-5"><LikeButton post={p} /><RepostButton post={p} /><span className="ml-auto"><SaveButton post={p} /></span></div>
+          <div className="flex items-center gap-5"><LikeButton post={p} /><RepostButton post={p} /><ShareButton post={p} /><span className="ml-auto"><SaveButton post={p} /></span></div>
           <form className="mt-4 flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (body.trim() && !add.isPending) { setError(null); add.mutate(body.trim()); } }}>
             {me && <Avatar user={me} size={32} />}
             <textarea value={body} onChange={(e) => setBody(e.target.value)} maxLength={1000} rows={1} placeholder="Add a comment…" aria-label="Add a comment"

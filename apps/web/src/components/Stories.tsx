@@ -2,7 +2,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
+import Link from "next/link";
 import { api, ApiError, newIdempotencyKey } from "@/lib/api";
+import { type Envelope, openDirect, REACTIONS, sendEnvelope } from "@/lib/chat";
 import { timeAgo } from "@/lib/dates";
 import { useSession } from "@/lib/session";
 import type { Story, TrayItem, User } from "@/lib/types";
@@ -131,6 +133,7 @@ export function StoryViewer({ users, start, onClose }: { users: User[]; start: n
             </div>
             <button className="absolute inset-y-0 left-0 w-1/3" aria-label="Previous" onClick={prev} />
             <button className="absolute inset-y-0 right-0 w-2/3" aria-label="Next" onClick={next} />
+            {user.id !== me?.id && <ReplyBar story={story} owner={user} onFocus={(f) => setPaused(f)} />}
             {user.id === me?.id && (
               <p className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 px-4 pt-8 pb-4 text-[13px] text-white">
                 Seen by {viewers.data?.length ?? 0}{viewers.data?.length ? `: ${viewers.data.slice(0, 3).map((v) => v.username).join(", ")}${viewers.data.length > 3 ? "…" : ""}` : ""}
@@ -140,6 +143,60 @@ export function StoryViewer({ users, start, onClose }: { users: User[]; start: n
         )}
       </div>
       <button onClick={onClose} className={clsx("absolute top-5 right-5 hidden text-white/80 sm:block")} aria-label="Close"><CloseIcon className="h-7 w-7" /></button>
+    </div>
+  );
+}
+
+/**
+ * Reply or react to a story. It arrives as an end-to-end encrypted DM to the story's author, with a
+ * small thumbnail of the story, like Instagram. The server can't tell it's a story reply.
+ */
+function ReplyBar({ story, owner, onFocus }: { story: Story; owner: User; onFocus: (focused: boolean) => void }) {
+  const { privateKey } = useSession();
+  const qc = useQueryClient();
+  const [text, setText] = useState("");
+  const [sent, setSent] = useState<string | null>(null);
+  const [floating, setFloating] = useState<{ id: number; emoji: string; x: number }[]>([]);
+  const thumb = story.media.posterUrl ?? story.media.srcset[0]?.url ?? story.media.url;
+  const send = useMutation({
+    mutationFn: async (env: Envelope) => sendEnvelope(qc, await openDirect(owner.id), env, privateKey!, newIdempotencyKey()),
+    onSuccess: (_m, env) => { setSent(env.t === "story_reaction" ? `Reacted ${env.emoji}` : "Sent"); setTimeout(() => setSent(null), 1600); },
+  });
+  const react = (emoji: string) => {
+    const id = Date.now() + Math.random();
+    setFloating((f) => [...f, { id, emoji, x: 20 + Math.random() * 60 }]);
+    setTimeout(() => setFloating((f) => f.filter((x) => x.id !== id)), 1400);
+    send.mutate({ t: "story_reaction", storyId: story.id, storyOwner: owner.id, thumb, emoji });
+  };
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation(); // don't trigger next/prev or pause
+
+  return (
+    <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/80 px-3 pt-10 pb-3" onPointerDown={stop} onPointerUp={stop} onClick={stop}>
+      {floating.map((f) => <span key={f.id} className="emoji-float pointer-events-none absolute bottom-20 text-[44px]" style={{ left: `${f.x}%` }}>{f.emoji}</span>)}
+      {!privateKey ? (
+        <Link href="/messages" className="block text-center text-[13px] text-white/80 underline">Unlock your messages to reply</Link>
+      ) : (
+        <>
+          <div className="mb-2 flex justify-around">
+            {REACTIONS.map((e) => (
+              <button key={e} type="button" onClick={() => react(e)} aria-label={`React ${e}`} className="text-[26px] transition hover:scale-125 active:scale-90">{e}</button>
+            ))}
+          </div>
+          <form className="flex items-center gap-2" onSubmit={(e) => {
+            e.preventDefault();
+            const t = text.trim();
+            if (!t) return;
+            send.mutate({ t: "story_reply", storyId: story.id, storyOwner: owner.id, thumb, text: t.slice(0, 1000) });
+            setText("");
+          }}>
+            <input value={text} onChange={(e) => setText(e.target.value)} onFocus={() => onFocus(true)} onBlur={() => onFocus(false)} maxLength={1000}
+              placeholder={`Reply to ${owner.username}…`} aria-label={`Reply to ${owner.username}`}
+              className="h-11 flex-1 rounded-full border border-white/50 bg-transparent px-4 text-[14px] text-white placeholder:text-white/60 focus:border-white focus:outline-none" />
+            {text.trim() && <button className="text-[14px] font-semibold text-white" disabled={send.isPending}>Send</button>}
+          </form>
+          <p className="h-5 pt-1 text-center text-[12px] text-white/80" role="status">{send.isError ? "Couldn't send. Try again." : sent ?? ""}</p>
+        </>
+      )}
     </div>
   );
 }

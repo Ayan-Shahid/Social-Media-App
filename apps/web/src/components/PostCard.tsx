@@ -8,7 +8,8 @@ import { patchPost } from "@/lib/cache";
 import { timeAgo } from "@/lib/dates";
 import type { Collection, Post } from "@/lib/types";
 import { DateStamp, UserLink } from "./ui";
-import { BookmarkIcon, CommentIcon, HeartIcon, RepostIcon } from "./icons";
+import { BookmarkIcon, CommentIcon, HeartIcon, RepostIcon, SendIcon } from "./icons";
+import { ShareSheet } from "./ShareSheet";
 import { Carousel } from "./Media";
 import { RichText } from "./RichText";
 
@@ -144,6 +145,7 @@ export function PostCard({ post, priority }: { post: Post; priority?: boolean })
               <CommentIcon className="h-6 w-6" /><span className="tabular-nums">{post.commentCount}</span>
             </Link>
             <RepostButton post={post} />
+            <ShareButton post={post} />
             <SaveButton post={post} />
           </div>
         </div>
@@ -155,5 +157,18 @@ export function PostCard({ post, priority }: { post: Post; priority?: boolean })
         )}
       </div>
     </article>
+  );
+}
+
+/** Paper plane: send the post to chats (end-to-end encrypted). */
+export function ShareButton({ post, className }: { post: Post; className?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)} aria-label="Share" className={clsx("transition hover:-translate-y-0.5 active:scale-90", className)}>
+        <SendIcon className="h-6 w-6" />
+      </button>
+      {open && <ShareSheet post={post} onClose={() => setOpen(false)} />}
+    </>
   );
 }
