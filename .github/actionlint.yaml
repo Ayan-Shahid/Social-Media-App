@@ -1,0 +1,4 @@
+# Labels of the self-hosted runner on the MacBook (docs/DEPLOY.md), so actionlint knows them.
+self-hosted-runner:
+  labels:
+    - glimpse

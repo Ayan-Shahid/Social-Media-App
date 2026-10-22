@@ -1,4 +1,4 @@
-# Glimpse
+# Glimps
 
 A photo and video sharing app: feed, stories, shorts, live video, reposts, saved collections, mentions and hashtags, notifications, private accounts, and end-to-end encrypted direct and group messages. Light and dark themes over a WebGL background that reacts to what you do.
 
@@ -67,7 +67,11 @@ The whole stack is limited to about 3.8 GB of memory (see `deploy.resources` in 
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: turn on Continue with Google. In Google Cloud Console, create an OAuth client (Web application) with the redirect URI `<APP_ORIGIN>/api/auth/google/callback`.
 - `FANOUT_THRESHOLD=3`: makes the "celebrity" pull path kick in for small demos.
 
-### Put it online with a Cloudflare Tunnel
+### Production: automatic deploys to the MacBook
+
+Pushes to `main` are tested and built on GitHub, then deployed to the MacBook by a self-hosted runner, with health checks and automatic rollback. Setup, Cloudflare settings and day-to-day commands are in **[docs/DEPLOY.md](docs/DEPLOY.md)**. Live at **https://glimpse.ayandev.app**.
+
+### Put it online with a Cloudflare Tunnel (manual)
 
 Glimpse gets its own tunnel, so it never touches another app's tunnel.
 

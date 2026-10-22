@@ -1,0 +1,181 @@
+# CI on GitHub's servers; deploy on the MacBook (DECISIONS.md D19, docs/DEPLOY.md).
+#
+#   every push / pull request:  API tests (real Postgres, 2x Redis, S3, ffmpeg), web typecheck + build,
+#                               Compose + Caddy config checks, Docker image builds
+#   push to main, all green:    images pushed to GHCR, tagged with the commit SHA
+#                               -> the self-hosted runner on the MacBook pulls exactly those images,
+#                                  migrates, restarts, health-checks, and rolls back if anything fails
+#
+# Security: untrusted code never reaches the Mac. Pull requests (including from forks) only run on
+# GitHub-hosted runners; the deploy job runs only for pushes to main in this repository, inside the
+# "production" environment (which can require your approval).
+name: CI and deploy
+
+on:
+  push:
+    branches: [main, rebuild-2026]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Image names (GHCR names must be lowercase): ghcr.io/ayan-shahid/glimpse-api and glimpse-web.
+jobs:
+  api:
+    name: API tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: glimpse_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis-cache:
+        image: redis:8-alpine
+        ports: ["6380:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis-queue:
+        image: redis:8-alpine
+        ports: ["6381:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TEST_MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/glimpse_test
+      TEST_DATABASE_URL: postgres://glimpse_app:testpass@localhost:5432/glimpse_test
+      TEST_WORKER_DATABASE_URL: postgres://glimpse_worker:workerpass@localhost:5432/glimpse_test
+      TEST_REDIS_CACHE_URL: redis://localhost:6380/14
+      TEST_REDIS_QUEUE_URL: redis://localhost:6381/14
+      TEST_S3_ENDPOINT: http://localhost:4566
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/api/package-lock.json
+      - name: ffmpeg (video tests) and an S3 API (moto)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pipx install "moto[server]"
+          nohup moto_server -p 4566 > /tmp/moto.log 2>&1 &
+          for _ in $(seq 30); do curl -sf localhost:4566 >/dev/null && break; sleep 1; done
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  web:
+    name: Web typecheck and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx next build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  config:
+    name: Compose and Caddy config
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: docker compose config
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          docker compose --profile tunnel config --quiet
+      - name: caddy validate
+        run: docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: shellcheck deploy scripts
+        run: shellcheck deploy/*.sh
+
+  images:
+    name: Build images
+    needs: [api, web, config]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - { app: api, image: ghcr.io/ayan-shahid/glimpse-api }
+          - { app: web, image: ghcr.io/ayan-shahid/glimpse-web }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # linux/amd64: the 2018 MacBook Pro is Intel, so Docker Desktop runs these natively.
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.app }}
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ matrix.image }}:${{ github.sha }}
+            ${{ matrix.image }}:main
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+  deploy:
+    name: Deploy to the MacBook
+    needs: images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Ayan-Shahid/Social-Media-App'
+    # The runner installed on the MacBook (docs/DEPLOY.md) carries these labels.
+    runs-on: [self-hosted, macOS, glimpse]
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://glimpse.ayandev.app
+    # One deploy at a time; a newer push waits for the current one instead of interrupting it.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Log in to GHCR (read-only, this run's token)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Deploy ${{ github.sha }}
+        run: ./deploy/deploy.sh
+        env:
+          GLIMPSE_TAG: ${{ github.sha }}
+          GLIMPSE_API_IMAGE: ghcr.io/ayan-shahid/glimpse-api
+          GLIMPSE_WEB_IMAGE: ghcr.io/ayan-shahid/glimpse-web
+          GLIMPSE_PUBLIC_URL: https://glimpse.ayandev.app
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io || true

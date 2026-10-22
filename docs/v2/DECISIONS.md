@@ -198,3 +198,26 @@ Every encrypted message's plaintext is a small JSON envelope: text, a shared pos
 - **Session gone** (expired, or revoked elsewhere): any API 401 signs the tab out and sends it to the login page, instead of leaving a half-working screen.
 - **Live sync:** every tab and device opens its own websocket. Events go to a per-user room on whichever API instance each socket is connected to (D11), so a message, notification or upload result appears on all of them at once. Presence counts connections, so closing one tab doesn't mark you offline while another is open. Anything not pushed (like counts, profiles) is re-fetched when a tab or app regains focus, and `staleTime` (30 s) keeps that cheap.
 - **Encryption keys per device:** the private message key never leaves a browser unencrypted. A new device downloads the password-protected backup and unlocks it locally (Argon2id), so the server can't.
+
+## D19. CI/CD: test and build on GitHub, deploy by pulling on the MacBook (added) ✅
+
+**Decision:** one workflow (`.github/workflows/ci-deploy.yml`) has five jobs.
+1. **API tests on GitHub-hosted Ubuntu:** real Postgres 18, two Redis instances, an S3 API (moto) and ffmpeg. The same 95 tests as locally.
+2. **Web:** typecheck and production build.
+3. **Config:** `docker compose config` with and without the tunnel profile, `caddy validate`, and shellcheck.
+4. **Images:** built for `linux/amd64` and pushed to GHCR tagged with the **commit SHA** (only for `main`). The build uses layer caching.
+5. **Deploy:** on a self-hosted runner on the MacBook, label `glimpse`, `production` environment. It runs `deploy/deploy.sh`.
+
+- **Build in CI, pull on the Mac.** A 2018 MacBook building two Node images and a Next.js app on every deploy would take long and starve Veritas. Pulling prebuilt images takes a minute or two. The Mac runs *exactly* the bytes that passed the tests: the same SHA tag, not a rebuild that could differ.
+- **Pull, not push.** The Mac opens no inbound ports: the runner polls GitHub, and the site is reached through Cloudflare Tunnel. Nothing on the Mac is exposed to the internet except through Caddy via the tunnel.
+- **Self-hosted runner on a public repo** is the classic risk: anyone's fork PR could run code on your machine. Mitigations:
+  - Only the deploy job targets the Mac. It runs only for `push` to `main` in this repository (`if:` guard), and only in the `production` environment, which is restricted to `main` and can require approval.
+  - PR jobs use GitHub-hosted runners only.
+  - The deploy job's token can only read packages and contents.
+  - Fork PR workflows need approval.
+- **Health-checked deploy with automatic rollback.** `deploy.sh` waits for the migration to exit 0. It then requires *both* API instances to answer through Caddy (proving the load balancer and both processes), plus the web app and the live service. If anything fails, it restarts the previous SHA and fails the run. Logs from the failing services are printed into the Actions log.
+- **Migrations must be additive** (expand/contract) so a rollback can run on the newer schema. A destructive change ships in two releases.
+- **Config bind mounts** (Caddyfile, SeaweedFS script) are copied *in place* into `~/glimpse/app`. Docker binds single files by inode, so replacing the file would leave the container on the old one. If one changed, its container is restarted.
+- **Secrets** stay in `~/glimpse/.env` on the Mac (mode 600). `deploy.sh` refuses example values and an `APP_ORIGIN` that doesn't match the public URL.
+
+**Tested here:** both scripts pass shellcheck, and the workflow passes actionlint. `deploy.sh` was exercised end to end with stand-in `docker`/`curl` commands: first deploy, normal deploy, a build that fails health checks (rolled back), a failed migration (rolled back), and refusal of a wrong `APP_ORIGIN` or an example secret. **Not yet run:** the workflow on GitHub and the runner on the Mac.
