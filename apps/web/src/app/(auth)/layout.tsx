@@ -2,7 +2,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1.1fr_1fr]">
       {/* A contact sheet of empty frames: the app before anyone has posted. */}
-      <div className="relative hidden overflow-hidden bg-ink lg:block" aria-hidden>
+      <div className="relative hidden overflow-hidden bg-[#111317] lg:block" aria-hidden>
         <div className="absolute inset-0 grid grid-cols-3 gap-3 p-10 opacity-90">
           {Array.from({ length: 12 }, (_, i) => (
             <div key={i} className="relative rounded-[3px] bg-white/[0.06] ring-1 ring-white/10">

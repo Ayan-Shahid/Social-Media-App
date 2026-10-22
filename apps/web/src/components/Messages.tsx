@@ -31,7 +31,7 @@ export function GroupAvatar({ c, size }: { c: Conversation; size: number }) {
   return (
     <span className="relative inline-block shrink-0" style={{ width: size, height: size }}>
       {a && <span className="absolute top-0 left-0"><Avatar user={a} size={size * 0.7} /></span>}
-      {b && <span className="absolute right-0 bottom-0 rounded-full ring-2 ring-white"><Avatar user={b} size={size * 0.7} /></span>}
+      {b && <span className="absolute right-0 bottom-0 rounded-full ring-2 ring-paper"><Avatar user={b} size={size * 0.7} /></span>}
     </span>
   );
 }
@@ -46,7 +46,7 @@ export function ConversationList({ activeId }: { activeId?: string }) {
     <ul>
       {q.data.map((c) => (
         <li key={c.id}>
-          <Link href={`/messages/${c.id}`} className={clsx("flex items-center gap-3 px-4 py-3 transition hover:bg-white/50", c.id === activeId && "bg-white/60")}>
+          <Link href={`/messages/${c.id}`} className={clsx("flex items-center gap-3 px-4 py-3 transition hover:bg-paper/50", c.id === activeId && "bg-paper/60")}>
             {c.kind === "group" ? <GroupAvatar c={c} size={44} /> : c.otherUser ? <Avatar user={c.otherUser} size={44} online={isOnline(c.otherUser.id)} /> : null}
             <span className="min-w-0 flex-1">
               <span className="block truncate font-semibold">{convName(c)}</span>
@@ -214,7 +214,7 @@ export function Thread({ id }: { id: string }) {
           </Link>
         )}
         <div className="ml-auto flex items-center gap-2">
-          {isGroup && <button onClick={() => setPanel((p) => (p === "group" ? "none" : "group"))} className="rounded-full p-1.5 hover:bg-white/60" aria-label="Group info"><UsersIcon className="h-5 w-5" /></button>}
+          {isGroup && <button onClick={() => setPanel((p) => (p === "group" ? "none" : "group"))} className="rounded-full p-1.5 hover:bg-paper/60" aria-label="Group info"><UsersIcon className="h-5 w-5" /></button>}
           <button onClick={() => setPanel((p) => (p === "safety" ? "none" : "safety"))} className="chip" aria-expanded={panel === "safety"}>
             <LockIcon className="h-3.5 w-3.5" /> Encrypted
           </button>
@@ -222,7 +222,7 @@ export function Thread({ id }: { id: string }) {
       </header>
 
       {panel === "safety" && (
-        <div className="border-b border-rule bg-white/50 px-5 py-4 text-[13px]">
+        <div className="border-b border-rule bg-paper/50 px-5 py-4 text-[13px]">
           {isGroup ? (
             <>
               <p className="font-semibold">Only current members can read new messages.</p>
@@ -313,7 +313,7 @@ export function PeoplePicker({ exclude, picked, onPick }: { exclude: string[]; p
         <ul className="mt-2 max-h-48 overflow-y-auto">
           {res.isPending ? <li className="p-2"><Spinner /></li> : shown.length === 0 ? <li className="p-2 text-[13px] text-graphite">No one found.</li> : shown.map((u) => (
             <li key={u.id}>
-              <button type="button" onClick={() => { onPick(u); setQ(""); }} className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-white/60">
+              <button type="button" onClick={() => { onPick(u); setQ(""); }} className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-paper/60">
                 <Avatar user={u} size={30} /><span className="font-semibold">{u.username}</span>
               </button>
             </li>
@@ -345,7 +345,7 @@ export function Sheet({ title, onClose, children }: { title: string; onClose: ()
     return () => window.removeEventListener("keydown", k);
   }, [onClose]);
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-ink/40 p-4 backdrop-blur-sm" onClick={onClose} role="dialog" aria-modal aria-label={title}>
+    <div className="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose} role="dialog" aria-modal aria-label={title}>
       <div data-surface className="rise w-full max-w-md space-y-4 rounded-2xl bg-paper p-5" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h2 className="display text-[20px]">{title}</h2>

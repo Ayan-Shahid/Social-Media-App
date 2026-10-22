@@ -2,6 +2,7 @@
 // Live updates over one WebSocket: messages, notifications, upload progress, presence, group changes.
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { io, type Socket } from "socket.io-client";
+import { pulse } from "@/components/ShaderBackdrop";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSession } from "./session";
 import type { EncryptedMessage, Media } from "./types";
@@ -28,11 +29,12 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     setSocket(s);
     s.on("hello", (h: { instance: string }) => setInstance(h.instance));
     s.on("message:new", (m: EncryptedMessage) => {
+      if (m.senderId !== me.id) pulse("message"); // bubbles rise from the Messages link
       qc.setQueryData<EncryptedMessage[]>(["messages", m.conversationId], (old) => (old && !old.some((x) => x.id === m.id) ? [...old, m] : old));
       qc.invalidateQueries({ queryKey: ["conversations"] });
     });
     s.on("notification:new", (n: { type?: string }) => {
-      if (n?.type === "live") qc.invalidateQueries({ queryKey: ["live-now"] });
+      if (n?.type === "live") { qc.invalidateQueries({ queryKey: ["live-now"] }); pulse("live"); }
       qc.invalidateQueries({ queryKey: ["unread"] });
       qc.invalidateQueries({ queryKey: ["notifications"] });
     });

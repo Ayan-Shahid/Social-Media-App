@@ -12,7 +12,7 @@ export function PostGrid({ posts, sheet }: { posts: Post[]; sheet?: boolean }) {
         const m = p.media[0];
         const src = m ? (m.kind === "video" ? m.posterUrl : m.srcset[0]?.url ?? m.url) : null;
         return (
-          <Link key={`${p.id}-${p.repostedBy?.id ?? ""}`} href={`/p/${p.id}`} className="group relative block aspect-square overflow-hidden bg-white/40">
+          <Link key={`${p.id}-${p.repostedBy?.id ?? ""}`} href={`/p/${p.id}`} className="group relative block aspect-square overflow-hidden bg-paper/40">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             {src && <img src={src} alt="" loading="lazy" className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />}
             {p.media.length > 1 && <span className="absolute top-2 right-2 rounded bg-black/55 px-1.5 text-[11px] font-semibold text-white">{p.media.length}</span>}
@@ -23,5 +23,5 @@ export function PostGrid({ posts, sheet }: { posts: Post[]; sheet?: boolean }) {
       })}
     </div>
   );
-  return sheet ? <div className="rounded-sm bg-ink p-1.5 sm:p-3">{grid}</div> : grid;
+  return sheet ? <div className="rounded-sm bg-[#111317] p-1.5 sm:p-3">{grid}</div> : grid;
 }

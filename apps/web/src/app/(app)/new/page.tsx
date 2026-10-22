@@ -24,13 +24,13 @@ function Tile({ item, onRemove, onRetry, onStatus }: { item: UploadItem; onRemov
         <img src={item.preview} alt="" className="h-full w-full object-cover" />
       )}
       {!ready && !failed && (
-        <span className="absolute inset-0 grid place-items-center bg-white/55 text-center text-[12px] font-semibold backdrop-blur-[1px]">
+        <span className="absolute inset-0 grid place-items-center bg-paper/60 text-center text-[12px] font-semibold backdrop-blur-[1px]">
           <span className="flex flex-col items-center gap-1.5"><Spinner className="h-4 w-4" />{item.mediaId ? (isVideo ? "Encoding video…" : "Processing…") : `Uploading ${Math.round(item.progress * 100)}%`}</span>
           {!item.mediaId && <span className="absolute inset-x-0 bottom-0 h-1 bg-ink/10"><span className="block h-full bg-stamp transition-[width] duration-200" style={{ width: `${item.progress * 100}%` }} /></span>}
         </span>
       )}
       {failed && (
-        <span className="absolute inset-0 grid place-items-center bg-white/85 p-2 text-center text-[12px] text-heart">
+        <span className="absolute inset-0 grid place-items-center bg-paper/85 p-2 text-center text-[12px] text-heart">
           <span>{item.error ?? m?.error ?? "Failed"}{item.error && <button onClick={onRetry} className="mt-1 block w-full font-semibold underline">Retry</button>}</span>
         </span>
       )}
@@ -68,10 +68,10 @@ function NewPost() {
   return (
     <div className="mx-auto max-w-[560px]">
       <PageTitle right={
-        <div className="flex rounded-full border border-rule bg-white/60 p-0.5 text-[13px] font-semibold">
+        <div className="flex rounded-full border border-rule bg-paper/60 p-0.5 text-[13px] font-semibold">
           {(["post", "short"] as const).map((k) => (
             <button key={k} onClick={() => { if (k !== kind) { up.reset(); setStates({}); setKind(k); } }}
-              className={clsx("rounded-full px-3 py-1 transition", kind === k ? "bg-ink text-white" : "text-graphite")}>{k === "post" ? "Post" : "Short"}</button>
+              className={clsx("rounded-full px-3 py-1 transition", kind === k ? "bg-ink text-on-ink" : "text-graphite")}>{k === "post" ? "Post" : "Short"}</button>
           ))}
           <Link href="/live/new" className="rounded-full px-3 py-1 text-graphite transition hover:text-ink">Live</Link>
         </div>

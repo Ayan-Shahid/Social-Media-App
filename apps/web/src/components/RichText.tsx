@@ -11,7 +11,7 @@ export function RichText({ text }: { text: string }) {
       {parts.map((p, i) => {
         if (i % 2 === 0) return p;
         const href = p.startsWith("@") ? `/u/${p.slice(1)}` : `/tags/${encodeURIComponent(p.slice(1).toLowerCase())}`;
-        return <Link key={i} href={href} className="font-medium text-[#b9480f] hover:underline">{p}</Link>;
+        return <Link key={i} href={href} className="font-medium text-stamp-ink hover:underline">{p}</Link>;
       })}
     </>
   );

@@ -15,17 +15,45 @@
   --color-stamp: #f2691b;
   --color-stamp-ink: #c9500f; /* orange that passes contrast for small text */
   --color-heart: #e0323b;
+  --color-on-ink: #ffffff; /* text on an ink background */
+  --color-good: #047857;
 
   --font-display: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
   --font-stamp: "Doto Variable", ui-monospace, monospace;
 }
 
+/* ---------- Dark theme ----------
+   Default follows the system. Settings can pin it: <html data-theme="light|dark"> (set before first
+   paint by an inline script, so there's no flash). Tokens flip; components use tokens, not colours. */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) { @slot; }
+  @media (prefers-color-scheme: dark) { &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) { @slot; } }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-fog: #0f1115; --color-fog-deep: #1c1f26; --color-paper: #16181e; --color-ink: #eef0f4;
+    --color-graphite: #9aa1ad; --color-rule: #2b3039; --color-stamp: #ff7a2e; --color-stamp-ink: #ff9a5c;
+    --color-heart: #ff4d5a; --color-on-ink: #0f1115; --color-good: #34d399;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --color-fog: #0f1115; --color-fog-deep: #1c1f26; --color-paper: #16181e; --color-ink: #eef0f4;
+  --color-graphite: #9aa1ad; --color-rule: #2b3039; --color-stamp: #ff7a2e; --color-stamp-ink: #ff9a5c;
+  --color-heart: #ff4d5a; --color-on-ink: #0f1115; --color-good: #34d399;
+  color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
+
 @layer base {
-  html { -webkit-text-size-adjust: 100%; background: var(--color-fog); }
+  html { -webkit-text-size-adjust: 100%; background: var(--color-fog); transition: background-color 300ms; }
   /* The shader paints the wall; this image is the fallback until (or if) WebGL starts. */
   body { @apply text-ink font-sans antialiased; background: var(--color-fog) url("/textures/bg-static.webp") center / cover fixed; }
   html.gl-on body { background: transparent; }
+  html:where([data-theme="dark"]) body { background-image: url("/textures/bg-static-dark.webp"); }
+  @media (prefers-color-scheme: dark) { html:where(:not([data-theme="light"])) body { background-image: url("/textures/bg-static-dark.webp"); } }
+  html.gl-on body { background-image: none; }
   :focus-visible { outline: 2px solid var(--color-stamp); outline-offset: 2px; border-radius: 6px; }
   ::selection { background: var(--color-stamp); color: white; }
 }
@@ -40,7 +68,7 @@
   /* Surfaces. With WebGL on, the shader draws the paper (data-surface); CSS keeps a faint veil so
      edges stay crisp while scrolling. Without WebGL, they're plain white. */
   [data-surface] { background: var(--color-paper); }
-  html.gl-on [data-surface] { background: rgb(255 255 255 / 0.18); }
+  html.gl-on [data-surface] { background: color-mix(in oklab, var(--color-paper) 18%, transparent); }
   .print { padding: 10px 10px 0; }
 
   /* ---------- Buttons: grainy mesh-gradient WebP + flat 1px border. No shadows, no bevels. ---------- */
@@ -63,18 +91,25 @@
   .btn-stamp:hover:not(:disabled) { border-color: rgb(120 36 6 / 0.7); }
   .btn-line { background-image: url("/textures/btn-paper.webp"); color: var(--color-ink); border-color: var(--color-rule); }
   .btn-line:hover:not(:disabled) { border-color: var(--color-ink); }
+  /* Dark theme: the primary button inverts to frosted light with dark text; secondary turns charcoal. */
+  .btn-ink:where([data-theme="dark"] *) { background-image: url("/textures/btn-ink-dark.webp"); color: #0f1115; border-color: rgb(255 255 255 / 0.3); }
+  .btn-line:where([data-theme="dark"] *) { background-image: url("/textures/btn-paper-dark.webp"); }
+  @media (prefers-color-scheme: dark) {
+    .btn-ink:where(:root:not([data-theme="light"]) *) { background-image: url("/textures/btn-ink-dark.webp"); color: #0f1115; border-color: rgb(255 255 255 / 0.3); }
+    .btn-line:where(:root:not([data-theme="light"]) *) { background-image: url("/textures/btn-paper-dark.webp"); }
+  }
   .btn-sm { padding: 0.35rem 0.8rem; font-size: 0.8125rem; }
   .btn-icon { padding: 0; width: 2.75rem; height: 2.75rem; }
 
   .field {
-    width: 100%; border-radius: 0.8rem; border: 1px solid var(--color-rule); background: rgb(255 255 255 / 0.85);
+    width: 100%; border-radius: 0.8rem; border: 1px solid var(--color-rule); background: color-mix(in oklab, var(--color-paper) 85%, transparent); color: var(--color-ink);
     padding: 0.62rem 0.9rem; font-size: 15px; outline: none; transition: border-color 150ms, background 150ms;
   }
-  .field::placeholder { color: rgb(91 97 107 / 0.7); }
-  .field:focus { border-color: var(--color-ink); background: #fff; }
+  .field::placeholder { color: color-mix(in oklab, var(--color-graphite) 75%, transparent); }
+  .field:focus { border-color: var(--color-ink); background: var(--color-paper); }
   .label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-graphite); }
 
-  .chip { @apply inline-flex items-center gap-1 rounded-full border border-rule bg-white/70 px-3 py-1 text-[13px] font-medium transition hover:border-ink; }
+  .chip { @apply inline-flex items-center gap-1 rounded-full border border-rule bg-paper/70 px-3 py-1 text-[13px] font-medium transition hover:border-ink; }
 }
 
 /* ---------- Motion ---------- */

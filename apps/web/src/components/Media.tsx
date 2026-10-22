@@ -58,8 +58,8 @@ export function Carousel({ media, alt, ratio, priority, onIndex }: { media: Medi
           </div>
         ))}
       </div>
-      {i > 0 && <button onClick={() => go(i - 1)} aria-label="Previous" className="absolute top-1/2 left-2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full bg-white/85 text-lg">‹</button>}
-      {i < media.length - 1 && <button onClick={() => go(i + 1)} aria-label="Next" className="absolute top-1/2 right-2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full bg-white/85 text-lg">›</button>}
+      {i > 0 && <button onClick={() => go(i - 1)} aria-label="Previous" className="absolute top-1/2 left-2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full bg-paper/85 text-lg text-ink">‹</button>}
+      {i < media.length - 1 && <button onClick={() => go(i + 1)} aria-label="Next" className="absolute top-1/2 right-2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full bg-paper/85 text-lg text-ink">›</button>}
       <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center gap-1.5">
         {media.map((m, n) => <span key={m.id} className={clsx("h-1.5 w-1.5 rounded-full transition", n === i ? "bg-white" : "bg-white/50")} />)}
       </div>

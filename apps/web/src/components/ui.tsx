@@ -16,13 +16,13 @@ export function Avatar({ user, size = 36, online, ring }: { user: Pick<User, "us
           {user.username.slice(0, 1).toUpperCase()}
         </span>
       )}
-      {online && <span className="absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500" aria-label="Online" />}
+      {online && <span className="absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-paper bg-emerald-500" aria-label="Online" />}
     </span>
   );
   if (!ring) return inner;
   return (
     <span className={clsx("inline-flex rounded-full p-[2.5px]", ring === "unseen" ? "bg-[conic-gradient(from_200deg,#f2691b,#ffb36b,#e0323b,#f2691b)]" : "bg-rule")}>
-      <span className="rounded-full bg-white p-[2px]">{inner}</span>
+      <span className="rounded-full bg-paper p-[2px]">{inner}</span>
     </span>
   );
 }

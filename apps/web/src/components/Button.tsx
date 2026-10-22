@@ -10,7 +10,7 @@ export const Button = forwardRef<HTMLButtonElement, Props>(function Button({ var
   return (
     <button ref={ref} {...rest} disabled={disabled || loading} data-loading={loading ? "true" : undefined} aria-busy={loading || undefined}
       className={clsx("btn", `btn-${variant}`, size === "sm" && "btn-sm", size === "icon" && "btn-icon", className)}>
-      {loading && <Spinner className={clsx("h-4 w-4 border-2", variant === "line" ? "" : "border-white/30 border-t-white")} />}
+      {loading && <Spinner className={clsx("h-4 w-4 border-2", variant === "line" ? "" : "border-current/30 border-t-current")} />}
       <span className="inline-flex items-center gap-2">{children}</span>
     </button>
   );

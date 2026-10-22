@@ -8,6 +8,8 @@ import { ACCEPT, uploadAndWait } from "@/components/Uploader";
 import { Button } from "@/components/Button";
 import { Avatar, ErrorText, PageTitle, Spinner } from "@/components/ui";
 import { Switch } from "@/components/Switch";
+import { type ThemePref, useThemePref } from "@/lib/theme";
+import clsx from "clsx";
 
 export default function SettingsPage() {
   const { me, chatKeys } = useSession();
@@ -54,13 +56,16 @@ export default function SettingsPage() {
             <textarea value={bio} onChange={(e) => setBio(e.target.value)} maxLength={300} rows={4} className="field resize-none" />
             <span className="block text-right text-[12px] text-graphite tabular-nums">{bio.length}/300</span></label>
           <ErrorText>{status.error}</ErrorText>
-          {status.ok && <p className="text-[13px] font-medium text-emerald-700" role="status">{status.ok}</p>}
+          {status.ok && <p className="text-[13px] font-medium text-good" role="status">{status.ok}</p>}
           <Button loading={busy}>Save profile</Button>
         </form>
         <p className="border-t border-rule pt-4 text-[13px] text-graphite">
           Message key: {chatKeys === "password" ? "protected by your password." : chatKeys === "passcode" ? "protected by your chat passcode." : "not set up yet. Open Messages to set a chat passcode."}
         </p>
       </div>
+
+      <h2 className="mt-10 mb-3 font-semibold">Appearance</h2>
+      <div data-surface className="rounded-2xl p-6"><ThemePicker /></div>
 
       <h2 className="mt-10 mb-3 font-semibold">Privacy</h2>
       <div data-surface className="space-y-5 rounded-2xl p-6">
@@ -101,6 +106,29 @@ function Blocked() {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+const THEMES: { id: ThemePref; label: string; hint: string }[] = [
+  { id: "system", label: "System", hint: "Match this device" },
+  { id: "light", label: "Light", hint: "Fog and paper" },
+  { id: "dark", label: "Dark", hint: "Darkroom" },
+];
+
+/** Theme for this device. Switching animates: the shader cross-fades its palette. */
+function ThemePicker() {
+  const [pref, setPref] = useThemePref();
+  return (
+    <div role="radiogroup" aria-label="Theme" className="grid grid-cols-3 gap-2">
+      {THEMES.map((t) => (
+        <button key={t.id} role="radio" aria-checked={pref === t.id} onClick={() => setPref(t.id)}
+          className={clsx("rounded-xl border p-3 text-left transition", pref === t.id ? "border-ink ring-1 ring-ink" : "border-rule hover:border-graphite")}>
+          <span className={clsx("mb-2 block h-10 rounded-lg ring-1 ring-rule", t.id === "light" ? "bg-[#eceef1]" : t.id === "dark" ? "bg-[#0f1115]" : "bg-[linear-gradient(135deg,#eceef1_50%,#0f1115_50%)]")} />
+          <span className="block text-[14px] font-semibold">{t.label}</span>
+          <span className="block text-[12px] text-graphite">{t.hint}</span>
+        </button>
+      ))}
     </div>
   );
 }

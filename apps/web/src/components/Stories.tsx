@@ -46,7 +46,7 @@ export function StoriesTray() {
           <span className="relative">
             <Avatar user={me} size={60} ring={mine ? (mine.allSeen ? "seen" : "unseen") : undefined} />
             <span role="button" tabIndex={0} aria-label="Add to your story" onClick={(e) => { e.stopPropagation(); file.current?.click(); }}
-              className="absolute -right-0.5 -bottom-0.5 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-stamp text-[15px] leading-none font-bold text-white">
+              className="absolute -right-0.5 -bottom-0.5 grid h-6 w-6 place-items-center rounded-full border-2 border-paper bg-stamp text-[15px] leading-none font-bold text-white">
               {posting ? <Spinner className="h-3 w-3 border-white/40 border-t-white" /> : "+"}
             </span>
           </span>

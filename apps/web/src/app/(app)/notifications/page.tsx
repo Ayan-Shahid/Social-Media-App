@@ -60,8 +60,8 @@ export default function NotificationsPage() {
             const first = n.actors[0]!;
             const others = n.total - 1;
             return (
-              <li key={i} className={clsx("rise flex items-center gap-3 px-4 py-3", n.unread && "bg-orange-50/60")} style={{ animationDelay: `${Math.min(i, 10) * 30}ms` }}>
-                <div className="flex -space-x-3">{n.actors.slice(0, 2).map((a) => <span key={a.id} className="rounded-full ring-2 ring-white"><Avatar user={a} size={36} /></span>)}</div>
+              <li key={i} className={clsx("rise flex items-center gap-3 px-4 py-3", n.unread && "bg-stamp/8")} style={{ animationDelay: `${Math.min(i, 10) * 30}ms` }}>
+                <div className="flex -space-x-3">{n.actors.slice(0, 2).map((a) => <span key={a.id} className="rounded-full ring-2 ring-paper"><Avatar user={a} size={36} /></span>)}</div>
                 <p className="min-w-0 flex-1 text-[14px]">
                   <Link href={`/u/${first.username}`} className="font-semibold">{first.username}</Link>
                   {others > 0 && <> and {others} other{others > 1 ? "s" : ""}</>} {VERB[n.type]}{n.comment && <span className="text-graphite"> &ldquo;{n.comment.slice(0, 80)}&rdquo;</span>}

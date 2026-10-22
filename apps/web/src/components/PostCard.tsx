@@ -10,6 +10,7 @@ import type { Collection, Post } from "@/lib/types";
 import { DateStamp, UserLink } from "./ui";
 import { BookmarkIcon, CommentIcon, HeartIcon, RepostIcon, SendIcon } from "./icons";
 import { ShareSheet } from "./ShareSheet";
+import { pulse } from "./ShaderBackdrop";
 import { Carousel } from "./Media";
 import { RichText } from "./RichText";
 
@@ -29,7 +30,12 @@ export function LikeButton({ post, big }: { post: Post; big?: boolean }) {
     onError: (_e, like) => patchPost(qc, post.id, { likedByMe: !like, likeCount: post.likeCount }),
   });
   return (
-    <button type="button" onClick={() => !m.isPending && m.mutate(!post.likedByMe)} aria-pressed={post.likedByMe} aria-label={post.likedByMe ? "Unlike" : "Like"}
+    <button type="button" aria-pressed={post.likedByMe} aria-label={post.likedByMe ? "Unlike" : "Like"}
+      onClick={(e) => {
+        if (m.isPending) return;
+        if (!post.likedByMe) { const r = e.currentTarget.getBoundingClientRect(); pulse("like", r.left + 12, r.top + 12); } // the background answers too
+        m.mutate(!post.likedByMe);
+      }}
       className={clsx("inline-flex items-center gap-1.5 font-semibold", big ? "flex-col text-[12px] text-white" : "text-[14px]")}>
       <span className="relative inline-grid">
         <HeartIcon key={burst} filled={post.likedByMe} className={clsx(big ? "h-8 w-8" : "h-6 w-6", post.likedByMe ? "heart-pop text-heart" : "")} />
@@ -54,7 +60,7 @@ export function RepostButton({ post, big }: { post: Post; big?: boolean }) {
   });
   return (
     <button type="button" onClick={() => !m.isPending && m.mutate(!post.repostedByMe)} aria-pressed={post.repostedByMe} aria-label={post.repostedByMe ? "Undo repost" : "Repost"}
-      className={clsx("inline-flex items-center gap-1.5 font-semibold transition", big ? "flex-col text-[12px] text-white" : "text-[14px]", post.repostedByMe && !big && "text-emerald-700")}>
+      className={clsx("inline-flex items-center gap-1.5 font-semibold transition", big ? "flex-col text-[12px] text-white" : "text-[14px]", post.repostedByMe && !big && "text-good")}>
       <RepostIcon className={clsx(big ? "h-8 w-8" : "h-6 w-6", post.repostedByMe && "heart-pop")} />
       <span className="tabular-nums">{post.repostCount}</span>
     </button>
@@ -109,9 +115,9 @@ export function PostMedia({ post, priority }: { post: Post; priority?: boolean }
     onMutate: () => patchPost(qc, post.id, { likedByMe: true, likeCount: post.likeCount + (post.likedByMe ? 0 : 1) }),
     onSuccess: (r) => patchPost(qc, post.id, { likedByMe: true, likeCount: r.likeCount }),
   });
-  const onTap = () => {
+  const onTap = (e: React.MouseEvent) => {
     const now = Date.now();
-    if (now - lastTap.current < 320) { setFlash((f) => f + 1); if (!post.likedByMe) like.mutate(); }
+    if (now - lastTap.current < 320) { setFlash((f) => f + 1); if (!post.likedByMe) { pulse("like", e.clientX, e.clientY); like.mutate(); } }
     lastTap.current = now;
   };
   return (

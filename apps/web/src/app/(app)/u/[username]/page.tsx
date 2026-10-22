@@ -60,7 +60,7 @@ export default function ProfilePage({ params }: { params: Promise<{ username: st
       </header>
       <div className="mb-5 flex gap-1 text-[14px] font-semibold" role="tablist">
         {TABS.map(([k, label]) => (
-          <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} className={clsx("rounded-full px-4 py-1.5 transition", tab === k ? "bg-ink text-white" : "text-graphite hover:text-ink")}>{label}</button>
+          <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} className={clsx("rounded-full px-4 py-1.5 transition", tab === k ? "bg-ink text-on-ink" : "text-graphite hover:text-ink")}>{label}</button>
         ))}
         {isMe && <Link href="/saved" className="rounded-full px-4 py-1.5 text-graphite hover:text-ink">Saved</Link>}
       </div>
@@ -107,7 +107,7 @@ function ProfileMenu({ p }: { p: Profile }) {
   ];
   return (
     <div ref={ref} className="relative">
-      <button onClick={() => setOpen((o) => !o)} aria-label="More options" aria-expanded={open} className="grid h-9 w-9 place-items-center rounded-full text-[20px] leading-none hover:bg-white/60">⋯</button>
+      <button onClick={() => setOpen((o) => !o)} aria-label="More options" aria-expanded={open} className="grid h-9 w-9 place-items-center rounded-full text-[20px] leading-none hover:bg-paper/60">⋯</button>
       {open && (
         <ul data-surface role="menu" className="rise absolute top-10 left-0 z-30 w-60 overflow-hidden rounded-xl py-1 text-[14px] shadow-lg ring-1 ring-rule">
           {items.map((it) => (

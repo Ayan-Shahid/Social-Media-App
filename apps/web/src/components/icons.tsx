@@ -28,3 +28,5 @@ export const GoogleIcon = ({ className }: P) => (
 );
 export const LiveIcon = ({ className }: P) => <svg {...base} className={className}><circle cx="12" cy="12" r="2.2" fill="currentColor" /><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14" /></svg>;
 export const CameraFlipIcon = ({ className }: P) => <svg {...base} className={className}><path d="M4 8h3l1.5-2h7L17 8h3v11H4z" /><path d="M9.5 13.5a2.5 2.5 0 0 0 4.6 1.3M14.5 12.5A2.5 2.5 0 0 0 9.9 11.2" /><path d="m14.6 15.6.1-1.6-1.6.1M9.4 10.4l-.1 1.6 1.6-.1" /></svg>;
+export const SunIcon = ({ className }: P) => <svg {...base} className={className}><circle cx="12" cy="12" r="4" /><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4" /></svg>;
+export const MoonIcon = ({ className }: P) => <svg {...base} className={className}><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></svg>;
