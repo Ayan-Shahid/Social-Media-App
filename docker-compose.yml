@@ -1,0 +1,88 @@
+# Glimpse: everything runs in Docker. Nothing to install on the host except Docker itself.
+#
+#   cp .env.example .env      # then fill in the passwords
+#   docker compose up -d --build                      # local only: http://localhost:8090
+#   docker compose --profile tunnel up -d --build     # also start the Cloudflare tunnel
+#
+# Services start in order: db -> migrate (applies schema changes, then exits) -> api, web -> proxy -> tunnel.
+name: glimpse
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: glimpse_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: glimpse
+    volumes:
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glimpse_owner -d glimpse"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Runs every pending migration as the database owner, then exits. Safe to run on every deploy.
+  migrate:
+    build: ./apps/api
+    command: ["node", "dist/db/migrate.js"]
+    restart: "no"
+    environment:
+      MIGRATION_DATABASE_URL: postgres://glimpse_owner:${POSTGRES_PASSWORD}@db:5432/glimpse
+      APP_DB_ROLE: glimpse_app
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: ./apps/api
+    restart: unless-stopped
+    environment:
+      # The app role: no superuser, can't bypass row-level security.
+      DATABASE_URL: postgres://glimpse_app:${APP_DB_PASSWORD}@db:5432/glimpse
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8090}
+      MEDIA_DIR: /data/media
+      TRUST_PROXY: "1"
+    volumes:
+      - media:/data/media
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    build: ./apps/web
+    restart: unless-stopped
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8090}
+    depends_on:
+      - api
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Bound to localhost only, on a port that won't clash with Veritas. Change HOST_PORT in .env if needed.
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8090}:80"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+      - web
+
+  # Separate Cloudflare tunnel for Glimpse, so it can't affect Veritas's tunnel.
+  # Start with: docker compose --profile tunnel up -d
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - proxy
+
+volumes:
+  db-data:
+  media:

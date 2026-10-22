@@ -1,0 +1,50 @@
+@import "tailwindcss";
+@import "@fontsource-variable/archivo/wdth.css";
+@import "@fontsource-variable/instrument-sans/index.css";
+@import "@fontsource-variable/doto/index.css";
+
+/* Glimpse tokens. Film-camera world: fog-gray darkroom wall, white print paper, ink,
+   and one accent, the orange of an old camera's date imprint. */
+@theme {
+  --color-fog: #eceef1;
+  --color-fog-deep: #dfe2e7;
+  --color-paper: #ffffff;
+  --color-ink: #14161a;
+  --color-graphite: #5b616b;
+  --color-rule: #d3d7dd;
+  --color-stamp: #f2691b;
+  --color-heart: #e0323b;
+
+  --font-display: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-stamp: "Doto Variable", ui-monospace, monospace;
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body { @apply bg-fog text-ink font-sans antialiased; }
+  :focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; border-radius: 4px; }
+  ::selection { background: var(--color-stamp); color: white; }
+}
+
+@layer components {
+  /* Wide Archivo: used only for the wordmark and page titles. */
+  .display { font-family: var(--font-display); font-stretch: 125%; font-weight: 750; letter-spacing: -0.01em; }
+  /* A photo printed on paper: white mat, soft lift off the wall. */
+  .print { background: var(--color-paper); padding: 10px 10px 0; box-shadow: 0 1px 0 rgb(20 22 26 / 0.06), 0 12px 30px -18px rgb(20 22 26 / 0.35); }
+  /* The camera date imprint. */
+  .stamp {
+    font-family: var(--font-stamp); font-weight: 800; color: var(--color-stamp); letter-spacing: 0.08em;
+    text-shadow: 0 0 6px rgb(242 105 27 / 0.55), 0 0 1px rgb(255 170 120 / 0.9);
+  }
+}
+
+@utility btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50; }
+@utility btn-ink { @apply btn bg-ink text-white hover:bg-black; }
+@utility btn-line { @apply btn border border-rule bg-paper text-ink hover:border-ink; }
+@utility field { @apply w-full rounded-xl border border-rule bg-paper px-3.5 py-2.5 text-[15px] outline-none transition placeholder:text-graphite/70 focus:border-ink; }
+@utility label { @apply text-[12px] font-semibold uppercase tracking-[0.12em] text-graphite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

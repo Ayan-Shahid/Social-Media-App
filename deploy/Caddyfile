@@ -1,0 +1,30 @@
+# One address for the whole app. Caddy sends API, media and live-chat traffic to the API,
+# and everything else to the web app.
+{
+	admin off
+	servers {
+		# Real visitor IP from Cloudflare, so rate limits apply per person, not per tunnel.
+		trusted_proxies static private_ranges
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+}
+
+:80 {
+	encode zstd gzip
+	request_body {
+		max_size 70MB
+	}
+	header -Server
+
+	@api path /api/* /media/* /socket.io/*
+	handle @api {
+		reverse_proxy api:4000 {
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+	handle {
+		reverse_proxy web:3000 {
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+}
