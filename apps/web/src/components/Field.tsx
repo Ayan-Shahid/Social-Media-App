@@ -1,6 +1,9 @@
 "use client";
 // A labelled input with its own validation: checks on blur (and on submit), marks the input
 // aria-invalid, and shows the problem in an Alert under it. Server errors come in via `error`.
+// Leaving a field you haven't typed in isn't a mistake (clicking "Continue with Google", tabbing past,
+// following a link), so an untouched empty field isn't flagged on blur; "required" shows on submit.
+// Once a field has been flagged, it re-checks as you type, so the error clears the moment it's fixed.
 import { forwardRef, useId, useState } from "react";
 import clsx from "clsx";
 import { Alert, AlertIcon } from "./Alert";
@@ -23,8 +26,12 @@ export const Field = forwardRef<HTMLInputElement, Props>(function Field({ label,
         <input ref={ref} id={id} {...rest}
           aria-invalid={touched || error ? !!shown : undefined} aria-describedby={shown ? `${id}-err` : hint ? `${id}-hint` : undefined}
           className={clsx("field", touched && "touched", shown && trailing ? "pr-[4.5rem]" : (shown || trailing) && "pr-10", className)}
-          onBlur={(e) => { setTouched(true); check(e.target.value); onBlur?.(e); }}
-          onChange={(e) => { if (touched) check(e.target.value); onChange?.(e); }} />
+          onBlur={(e) => {
+            if (e.target.value || touched) { setTouched(true); check(e.target.value); }
+            onBlur?.(e);
+          }}
+          // Typing into a flagged field (by blur, or by the form on submit) re-checks it live.
+          onChange={(e) => { if (touched || error) { setTouched(true); check(e.target.value); } onChange?.(e); }} />
         <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center gap-1.5">
           {shown && <AlertIcon tone="error" className="h-[18px] w-[18px] text-heart" />}
           {trailing}

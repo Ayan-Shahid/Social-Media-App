@@ -29,6 +29,11 @@ export default function RegisterPage() {
     [{ transform: "none" }, { transform: "translateX(-7px)" }, { transform: "translateX(6px)" }, { transform: "translateX(-4px)" }, { transform: "translateX(2px)" }, { transform: "none" }],
     { duration: 420, easing: "cubic-bezier(.36,.07,.19,.97)" });
   const form = useRef<HTMLFormElement>(null);
+  // The form's errors for a field go away as soon as you edit it; the field's own check takes over.
+  const clearFieldError = (e: React.FormEvent<HTMLFormElement>) => {
+    const name = (e.target as HTMLInputElement).name;
+    if (name && fields[name]) setFields(({ [name]: _gone, ...rest }) => rest);
+  };
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -64,7 +69,7 @@ export default function RegisterPage() {
   const strength = pw.length === 0 ? 0 : pw.length < 8 ? 1 : pw.length < 12 || !/[^a-zA-Z]/.test(pw) ? 2 : 3;
 
   return (
-    <form ref={form} onSubmit={onSubmit} data-surface className={"auth-card space-y-4 rounded-2xl p-6 sm:p-7"} noValidate>
+    <form ref={form} onSubmit={onSubmit} onInput={clearFieldError} data-surface className={"auth-card space-y-4 rounded-2xl p-6 sm:p-7"} noValidate>
       <div className="space-y-1">
         <h1 className="display text-[26px] leading-tight">Create your account</h1>
         <p className="text-[14px] text-graphite">Photos, shorts, stories, and messages only you and your friends can read.</p>
