@@ -9,6 +9,7 @@ import { Field, rules } from "@/components/Field";
 import { GoogleButton } from "@/components/GoogleButton";
 import { PasswordToggle, useCapsLock } from "@/components/PasswordToggle";
 import { StagedButton, type Stage } from "@/components/StagedButton";
+import { useTurnstile } from "@/lib/turnstile";
 
 const IDLE: Stage = { key: "idle", label: "Create account", state: "idle" };
 
@@ -21,6 +22,7 @@ export default function RegisterPage() {
     const [show, setShow] = useState(false);
   const [pw, setPw] = useState("");
   const caps = useCapsLock();
+  const human = useTurnstile("register");
   // Shake on error with the Web Animations API: replays every time, and keeps what was typed
   // (re-mounting the form to replay a CSS animation would wipe the fields).
   const shakeForm = () => form.current?.animate(
@@ -37,15 +39,24 @@ export default function RegisterPage() {
     setFields(problems); setError(null);
     if (Object.keys(problems).length) { shakeForm(); return; }
     try {
+      let captchaToken: string | undefined;
+      if (human.enabled) {
+        setStage({ key: "human", label: "Checking you're human…", state: "working" });
+        captchaToken = await human.getToken();
+      }
       await register(username, email, password, (step) => setStage(step === "keys"
         ? { key: "keys", label: "Creating your encryption keys…", state: "working" }
-        : { key: "create", label: "Creating your account…", state: "working" }));
+        : { key: "create", label: "Creating your account…", state: "working" }), captchaToken);
       setStage({ key: "done", label: "Welcome to Glimpse", state: "done" });
       setTimeout(() => router.replace("/"), 600);
     } catch (err) {
       setStage(IDLE);
       shakeForm();
-      if (err instanceof ApiError && err.fields) setFields(err.fields);
+      human.reset(); // tokens are single-use
+      if (err instanceof ApiError && err.data.captchaRequired) setError(human.failed
+        ? "The human check couldn't load. If you use a content blocker, allow challenges.cloudflare.com and try again."
+        : err.message);
+      else if (err instanceof ApiError && err.fields) setFields(err.fields);
       else setError(err instanceof ApiError ? err.message : "Couldn't reach Glimpse. Check your connection and try again.");
     }
   }
@@ -71,6 +82,7 @@ export default function RegisterPage() {
         </div>
       </div>
       <Alert tone="info" size="sm">We can&apos;t read your messages, so if you forget this password, old messages can&apos;t be recovered.</Alert>
+      <div ref={human.ref} className="flex justify-center empty:hidden" />
       <StagedButton stage={stage} />
       <p className="text-center text-[14px] text-graphite">Have an account? <Link href="/login" className="font-semibold text-ink underline-offset-4 hover:underline">Log in</Link></p>
     </form>

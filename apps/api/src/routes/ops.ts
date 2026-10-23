@@ -1,7 +1,7 @@
 // Ops: live system numbers for admins (DECISIONS.md D12). Also the Prometheus endpoint.
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { config, adminUsernames } from "../config.js";
-import { counterValues, cacheHits, cacheMisses, dbLoads, registry } from "../infra/metrics.js";
+import { counterValues, cacheHits, cacheMisses, dbLoads, registry, rateLimited } from "../infra/metrics.js";
 import { queueCounts } from "../infra/queues.js";
 import { redis, keys } from "../infra/redis.js";
 import { forbidden, requireUser } from "../lib/http.js";
@@ -25,10 +25,11 @@ export async function requireAdmin(req: Request, _res: Response, next: NextFunct
 }
 
 opsRouter.get("/stats", requireAdmin, async (_req, res) => {
-  const [hits, misses, loads, queues, info, worker, online] = await Promise.all([
+  const [hits, misses, loads, queues, info, worker, online, limited, reconcile] = await Promise.all([
     counterValues(cacheHits), counterValues(cacheMisses), counterValues(dbLoads), queueCounts(),
     redis.info("memory"), redis.hgetall("stats:worker"),
     redis.zcount(keys.presence, Date.now() - 50_000, "+inf"),
+    counterValues(rateLimited), redis.get("ops:storage-reconcile"),
   ]);
   const caches = Object.keys({ ...hits, ...misses }).map((name) => {
     const h = hits[name] ?? 0, m = misses[name] ?? 0;
@@ -42,6 +43,8 @@ opsRouter.get("/stats", requireAdmin, async (_req, res) => {
     caches, queues, worker: Object.fromEntries(Object.entries(worker).map(([k, v]) => [k, Number(v)])),
     redisMemory: /used_memory_human:(\S+)/.exec(info)?.[1] ?? null,
     fanoutThreshold: config.FANOUT_THRESHOLD,
+    rateLimited: limited, // this instance, since it started
+    storageReconcile: reconcile ? JSON.parse(reconcile) : null,
   });
 });
 

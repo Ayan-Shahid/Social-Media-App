@@ -47,6 +47,13 @@ const schema = z.object({
   GOOGLE_CLIENT_ID: z.string().default(""),
   GOOGLE_CLIENT_SECRET: z.string().default(""),
   GOOGLE_ISSUER: z.string().default("https://accounts.google.com"),
+  // Rate limits (DECISIONS.md D20). Multiplies every limit: 1 in production; tests and load tests raise it.
+  RATE_LIMIT_SCALE: z.coerce.number().positive().default(1),
+  // Cloudflare Turnstile ("are you human") on sign-up, and on login after repeated failures.
+  // Leave the secret empty to turn it off (local development).
+  TURNSTILE_SITE_KEY: z.string().default(""),
+  TURNSTILE_SECRET_KEY: z.string().default(""),
+  TURNSTILE_VERIFY_URL: z.string().url().default("https://challenges.cloudflare.com/turnstile/v0/siteverify"),
 });
 
 export const config = schema.parse(process.env);

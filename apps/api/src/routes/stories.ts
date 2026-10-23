@@ -1,4 +1,5 @@
 // Stories: visible for 24 hours (the RLS policy hides expired ones; a worker deletes them later).
+import { limit } from "../lib/limits.js";
 import { Router } from "express";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -51,7 +52,7 @@ storiesRouter.get("/user/:userId", async (req, res) => {
   res.json(out);
 });
 
-storiesRouter.post("/", idempotent, async (req, res) => {
+storiesRouter.post("/", limit("publish"), idempotent, async (req, res) => {
   const me = requireUser(req);
   const { mediaId } = parse(z.object({ mediaId: z.uuid() }), req.body);
   const story = await asUser(me, async (tx) => {
@@ -65,7 +66,7 @@ storiesRouter.post("/", idempotent, async (req, res) => {
   res.status(201).json({ story: { id: story.id, expiresAt: story.expiresAt.toISOString() } });
 });
 
-storiesRouter.post("/:id/view", async (req, res) => {
+storiesRouter.post("/:id/view", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   await asUser(me, (tx) => tx.insert(storyViews).values({ storyId: id, viewerId: me }).onConflictDoNothing());

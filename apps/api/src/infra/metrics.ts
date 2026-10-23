@@ -13,6 +13,7 @@ export const cacheMisses = new client.Counter({ name: "glimpse_cache_misses_tota
 export const dbLoads = new client.Counter({ name: "glimpse_cache_db_loads_total", help: "Database loads caused by cache misses", labelNames: ["cache"], registers: [registry] });
 export const fanoutWrites = new client.Counter({ name: "glimpse_fanout_writes_total", help: "Timeline insertions by fan-out", registers: [registry] });
 export const outboxRelayed = new client.Counter({ name: "glimpse_outbox_relayed_total", help: "Outbox events moved to the queue", registers: [registry] });
+export const rateLimited = new client.Counter({ name: "glimpse_rate_limited_total", help: "Requests refused by a rate limit", labelNames: ["rule"], registers: [registry] });
 export const jobsProcessed = new client.Counter({ name: "glimpse_jobs_total", help: "Background jobs", labelNames: ["queue", "result"], registers: [registry] });
 
 /** Reads a counter's current values, for the Ops page. */

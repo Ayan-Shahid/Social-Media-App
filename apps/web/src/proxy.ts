@@ -15,6 +15,9 @@ export function proxy(request: NextRequest) {
     "media-src 'self' blob:",
     "font-src 'self'",
     "connect-src 'self'",
+    // Cloudflare Turnstile on login/sign-up runs in an iframe from this origin (its script is loaded
+    // by our own nonce'd code, which 'strict-dynamic' allows).
+    "frame-src https://challenges.cloudflare.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

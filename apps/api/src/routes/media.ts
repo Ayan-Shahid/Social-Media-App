@@ -14,17 +14,16 @@ import { idempotent } from "../middleware/idempotency.js";
 import { checkActual, checkDeclared, type Purpose } from "../media/pipeline.js";
 import { emit } from "../infra/outbox.js";
 import { BUCKETS, head, readHead, removeObject, signUpload } from "../infra/storage.js";
-import { limiter } from "../lib/limits.js";
+import { limit } from "../lib/limits.js";
 import { mediaDto } from "../services/hydrate.js";
 
 export const mediaRouter = Router();
 
-const uploadLimiter = limiter("upload", 60 * 60_000, 120, "Upload limit reached. Try again later.", true);
 const purposes = z.enum(["post", "avatar", "story", "short"]);
 type Row = typeof media.$inferSelect;
 const dto = (m: Row) => mediaDto({ ...m, file_name: m.fileName, poster_file_name: m.posterFileName, duration_ms: m.durationMs });
 
-mediaRouter.post("/uploads", (req, _res, next) => { requireUser(req); next(); }, uploadLimiter, idempotent, async (req, res) => {
+mediaRouter.post("/uploads", (req, _res, next) => { requireUser(req); next(); }, limit("upload"), idempotent, async (req, res) => {
   const me = requireUser(req);
   const body = parse(z.object({
     purpose: purposes.default("post"),

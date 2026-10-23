@@ -6,7 +6,7 @@
 // Even a bug in a route can't leak another user's private data, because the database refuses.
 import { sql } from "drizzle-orm";
 import {
-  pgTable, pgRole, pgPolicy, bigserial, uuid, text, timestamp, integer, boolean, primaryKey, index, uniqueIndex, check, jsonb, customType,
+  pgTable, pgRole, pgPolicy, bigserial, uuid, text, timestamp, integer, boolean, primaryKey, index, uniqueIndex, check, jsonb, customType, date,
 } from "drizzle-orm/pg-core";
 
 const citext = customType<{ data: string }>({ dataType: () => "citext" });
@@ -131,7 +131,8 @@ export const media = pgTable(
     ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(), // image | video
     purpose: text("purpose").notNull().default("post"), // post | avatar | story | short
-    status: text("status").notNull().default("ready"), // uploading | processing | ready | failed
+    status: text("status").notNull().default("ready"), // uploading | processing | ready | failed | deleting
+    deletingSince: timestamp("deleting_since", { withTimezone: true }), // cleanup phase 1 (DECISIONS.md D14)
     error: text("error"),
     originalPath: text("original_path"), // object key in the private uploads bucket; deleted after processing
     // Output files, all under /media/<id>/: { src, srcset: [{w, path}], hls, poster }
@@ -147,7 +148,7 @@ export const media = pgTable(
   },
   (t) => [
     check("media_kind", sql`${t.kind} in ('image', 'video')`),
-    check("media_status", sql`${t.status} in ('uploading', 'processing', 'ready', 'failed')`),
+    check("media_status", sql`${t.status} in ('uploading', 'processing', 'ready', 'failed', 'deleting')`),
     pgPolicy("media_select", { for: "select", to: appRole, using: signedIn }),
     pgPolicy("media_insert_self", { for: "insert", to: appRole, withCheck: sql`${t.ownerId} = ${me}` }),
     // "Complete upload": the owner may only move their own row out of 'uploading'. Everything
@@ -273,7 +274,7 @@ export const postMedia = pgTable(
       for: "insert", to: appRole,
       // Only into your own post, and only media you uploaded.
       withCheck: sql`exists (select 1 from posts p where p.id = ${t.postId} and p.author_id = ${me})
-        and exists (select 1 from media m where m.id = ${t.mediaId} and m.owner_id = ${me})`,
+        and exists (select 1 from media m where m.id = ${t.mediaId} and m.owner_id = ${me} and m.status = 'ready')`,
     }),
   ],
 ).enableRLS();
@@ -380,11 +381,16 @@ export const notifications = pgTable(
     liveId: uuid("live_id").references(() => liveStreams.id, { onDelete: "cascade" }),
     // The outbox event that created it: makes the worker idempotent.
     eventId: text("event_id").notNull(),
+    // Likes and reposts are merged: one row per post per day (bucket), counting and naming the latest actors.
+    actorCount: integer("actor_count").notNull().default(1),
+    recentActors: uuid("recent_actors").array().notNull().default(sql`'{}'`),
+    bucket: date("bucket"),
     createdAt: createdAt(),
     readAt: timestamp("read_at", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("notifications_event_key").on(t.eventId, t.recipientId),
+    uniqueIndex("notifications_merge_key").on(t.recipientId, t.type, t.postId, t.bucket).where(sql`${t.bucket} is not null`),
     index("notifications_recipient_idx").on(t.recipientId, t.createdAt),
     check("notifications_type", sql`${t.type} in ('like', 'comment', 'follow', 'mention', 'repost', 'follow_request', 'follow_accept', 'live')`),
     pgPolicy("notifications_select_self", { for: "select", to: appRole, using: sql`${t.recipientId} = ${me}` }),
@@ -669,6 +675,7 @@ export const outbox = pgTable(
     createdAt: createdAt(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     attempts: integer("attempts").notNull().default(0),
+    notifiedAt: timestamp("notified_at", { withTimezone: true }), // merged notification written (exactly once)
   },
   (t) => [
     index("outbox_unpublished_idx").on(t.id).where(sql`${t.publishedAt} is null`),

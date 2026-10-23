@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { limit } from "../lib/limits.js";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../db/client.js";
@@ -11,7 +12,7 @@ import { cached, invalidate } from "../infra/cache.js";
 import { keys, redis } from "../infra/redis.js";
 import { makeCursor, parseCursor, type Cursor } from "../lib/cursor.js";
 import { uuidList } from "../lib/sql.js";
-import { bumpStat, getStats, getUsers, hydrate, loadPosts, POST_CACHE_TTL, type CachedPost } from "../services/hydrate.js";
+import { bumpStat, getStatsAs, getUsers, hydrate, loadPosts, POST_CACHE_TTL, type CachedPost } from "../services/hydrate.js";
 import { readFeed } from "../services/feed.js";
 import { extractHashtags, extractMentions } from "../services/text.js";
 import { countTags, trendingTags } from "../services/tags.js";
@@ -68,7 +69,7 @@ async function saveTextLinks(tx: Tx, me: string, text: string, target: { postId:
   return mentioned;
 }
 
-postsRouter.post("/", idempotent, async (req, res) => {
+postsRouter.post("/", limit("publish"), idempotent, async (req, res) => {
   const me = requireUser(req);
   const body = parse(createSchema, req.body);
   const post = await asUser(me, async (tx) => {
@@ -152,63 +153,56 @@ async function authorOf(tx: Tx, postId: string) {
   return r.rows[0].author_id;
 }
 
-postsRouter.put("/:id/like", async (req, res) => {
+postsRouter.put("/:id/like", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
-  const count = await asUser(me, async (tx) => {
+  // The like row and its event commit together; the shared counter moves only after that commit.
+  const inserted = await asUser(me, async (tx) => {
     const author = await authorOf(tx, id);
     const ins = await tx.insert(postLikes).values({ postId: id, userId: me }).onConflictDoNothing().returning();
-    if (ins.length) {
-      await emit(tx, me, "like.created", { postId: id, userId: me, postAuthorId: author });
-      await bumpStat(id, "likes", 1);
-    }
-    return (await getStats(tx, [id])).get(id)?.likes ?? 0;
+    if (ins.length) await emit(tx, me, "like.created", { postId: id, userId: me, postAuthorId: author });
+    return ins.length > 0;
   });
-  res.json({ liked: true, likeCount: count });
+  if (inserted) await bumpStat(id, "likes", 1);
+  res.json({ liked: true, likeCount: (await getStatsAs(me, [id])).get(id)?.likes ?? 0 });
 });
 
-postsRouter.delete("/:id/like", async (req, res) => {
+postsRouter.delete("/:id/like", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
-  const count = await asUser(me, async (tx) => {
-    const del = await tx.delete(postLikes).where(and(eq(postLikes.postId, id), eq(postLikes.userId, me))).returning();
-    if (del.length) await bumpStat(id, "likes", -1);
-    return (await getStats(tx, [id])).get(id)?.likes ?? 0;
-  });
-  res.json({ liked: false, likeCount: count });
+  const deleted = await asUser(me, async (tx) =>
+    (await tx.delete(postLikes).where(and(eq(postLikes.postId, id), eq(postLikes.userId, me))).returning()).length > 0);
+  if (deleted) await bumpStat(id, "likes", -1);
+  res.json({ liked: false, likeCount: (await getStatsAs(me, [id])).get(id)?.likes ?? 0 });
 });
 
-postsRouter.put("/:id/repost", async (req, res) => {
+postsRouter.put("/:id/repost", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
-  const count = await asUser(me, async (tx) => {
+  const inserted = await asUser(me, async (tx) => {
     const author = await authorOf(tx, id);
     if (author === me) throw badRequest("You can't repost your own post.");
     const ins = await tx.insert(reposts).values({ userId: me, postId: id }).onConflictDoNothing().returning();
-    if (ins.length) {
-      await emit(tx, me, "repost.created", { postId: id, userId: me, postAuthorId: author, createdAt: ins[0]!.createdAt.toISOString() });
-      await bumpStat(id, "reposts", 1);
-    }
-    return (await getStats(tx, [id])).get(id)?.reposts ?? 0;
+    if (ins.length) await emit(tx, me, "repost.created", { postId: id, userId: me, postAuthorId: author, createdAt: ins[0]!.createdAt.toISOString() });
+    return ins.length > 0;
   });
-  res.json({ reposted: true, repostCount: count });
+  if (inserted) await bumpStat(id, "reposts", 1);
+  res.json({ reposted: true, repostCount: (await getStatsAs(me, [id])).get(id)?.reposts ?? 0 });
 });
 
-postsRouter.delete("/:id/repost", async (req, res) => {
+postsRouter.delete("/:id/repost", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
-  const count = await asUser(me, async (tx) => {
+  const deleted = await asUser(me, async (tx) => {
     const del = await tx.delete(reposts).where(and(eq(reposts.postId, id), eq(reposts.userId, me))).returning();
-    if (del.length) {
-      await emit(tx, me, "repost.deleted", { postId: id, userId: me });
-      await bumpStat(id, "reposts", -1);
-    }
-    return (await getStats(tx, [id])).get(id)?.reposts ?? 0;
+    if (del.length) await emit(tx, me, "repost.deleted", { postId: id, userId: me });
+    return del.length > 0;
   });
-  res.json({ reposted: false, repostCount: count });
+  if (deleted) await bumpStat(id, "reposts", -1);
+  res.json({ reposted: false, repostCount: (await getStatsAs(me, [id])).get(id)?.reposts ?? 0 });
 });
 
-postsRouter.put("/:id/save", async (req, res) => {
+postsRouter.put("/:id/save", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   const { collectionId } = parse(z.object({ collectionId: z.uuid().nullable().optional() }), req.body ?? {});
@@ -220,7 +214,7 @@ postsRouter.put("/:id/save", async (req, res) => {
   res.json({ saved: true });
 });
 
-postsRouter.delete("/:id/save", async (req, res) => {
+postsRouter.delete("/:id/save", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   await asUser(me, (tx) => tx.delete(savedPosts).where(and(eq(savedPosts.postId, id), eq(savedPosts.userId, me))));
@@ -252,7 +246,7 @@ postsRouter.get("/:id/comments", async (req, res) => {
   res.json({ comments: await asUser(me, (tx) => listComments(tx, me, sql`c.post_id = ${id}`)) });
 });
 
-postsRouter.post("/:id/comments", idempotent, async (req, res) => {
+postsRouter.post("/:id/comments", limit("comment"), idempotent, async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   const { body } = parse(z.object({ body: z.string().trim().min(1, "Write something").max(1000) }), req.body);
@@ -261,9 +255,9 @@ postsRouter.post("/:id/comments", idempotent, async (req, res) => {
     const [c] = await tx.insert(comments).values({ postId: id, authorId: me, body }).returning();
     const mentioned = await saveTextLinks(tx, me, body, { postId: id, commentId: c!.id }, false);
     await emit(tx, me, "comment.created", { postId: id, commentId: c!.id, userId: me, postAuthorId: author, mentions: mentioned });
-    await bumpStat(id, "comments", 1);
     return (await listComments(tx, me, sql`c.id = ${c!.id}`))[0];
   });
+  await bumpStat(id, "comments", 1); // after commit
   res.status(201).json({ comment });
 });
 
@@ -276,14 +270,14 @@ commentsRouter.delete("/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-commentsRouter.put("/:id/like", async (req, res) => {
+commentsRouter.put("/:id/like", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   await asUser(me, (tx) => tx.insert(commentLikes).values({ commentId: id, userId: me }).onConflictDoNothing());
   res.json({ liked: true });
 });
 
-commentsRouter.delete("/:id/like", async (req, res) => {
+commentsRouter.delete("/:id/like", limit("engage"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   await asUser(me, (tx) => tx.delete(commentLikes).where(and(eq(commentLikes.commentId, id), eq(commentLikes.userId, me))));

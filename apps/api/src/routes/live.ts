@@ -1,5 +1,6 @@
 // Live video control plane (DECISIONS.md D16). The video goes through the live service; these routes
 // manage the record: start, list who's live, details, end.
+import { limit } from "../lib/limits.js";
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -33,7 +34,7 @@ async function toDto(tx: Parameters<Parameters<typeof asUser>[1]>[0], rows: Row[
 const COLS = sql`id, host_id, title, status, started_at, created_at, ended_at, peak_viewers`;
 
 /** Start: creates the record. The browser then opens the ingest WebSocket at /stream/ingest/:id. */
-liveRouter.post("/", idempotent, async (req, res) => {
+liveRouter.post("/", limit("publish"), idempotent, async (req, res) => {
   const me = requireUser(req);
   const { title } = parse(z.object({ title: z.string().trim().max(100).default("") }), req.body);
   const out = await asUser(me, async (tx) => {

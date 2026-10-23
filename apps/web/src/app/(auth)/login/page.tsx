@@ -9,6 +9,7 @@ import { Field, rules } from "@/components/Field";
 import { GoogleButton } from "@/components/GoogleButton";
 import { PasswordToggle, useCapsLock } from "@/components/PasswordToggle";
 import { StagedButton, type Stage } from "@/components/StagedButton";
+import { useTurnstile } from "@/lib/turnstile";
 
 const IDLE: Stage = { key: "idle", label: "Log in", state: "idle" };
 
@@ -23,6 +24,8 @@ function LoginForm() {
   const [stage, setStage] = useState<Stage>(IDLE);
     const [show, setShow] = useState(false);
   const caps = useCapsLock();
+  // Only required by the API after 3 failed attempts; the token is sent whenever Turnstile is on.
+  const human = useTurnstile("login");
   // Shake on error with the Web Animations API: replays every time, and keeps what was typed
   // (re-mounting the form to replay a CSS animation would wipe the fields).
   const shakeForm = () => form.current?.animate(
@@ -39,15 +42,21 @@ function LoginForm() {
     setFields(problems); setError(null);
     if (Object.keys(problems).length) { shakeForm(); return; }
     try {
+      if (human.enabled) setStage({ key: "verify", label: "Checking your details…", state: "working" });
+      const captchaToken = await human.getToken();
       await login(email, password, (step) => setStage(step === "verify"
         ? { key: "verify", label: "Checking your details…", state: "working" }
-        : { key: "unlock", label: "Unlocking your messages…", state: "working" }));
+        : { key: "unlock", label: "Unlocking your messages…", state: "working" }), captchaToken);
       setStage({ key: "done", label: "Welcome back", state: "done" });
       setTimeout(() => router.replace(safeNext), 550);
     } catch (err) {
       setStage(IDLE);
       shakeForm();
+      human.reset(); // tokens are single-use
       if (err instanceof ApiError && err.status === 429) setError(err.message);
+      else if (err instanceof ApiError && err.data.captchaRequired) setError(human.failed
+        ? "The human check couldn't load. If you use a content blocker, allow challenges.cloudflare.com and try again."
+        : err.message);
       else if (err instanceof ApiError && err.status === 401) setFields({ password: "That email and password don't match. Check both and try again." });
       else setError(err instanceof ApiError ? err.message : "Couldn't reach Glimpse. Check your connection and try again.");
     }
@@ -65,6 +74,7 @@ function LoginForm() {
       <Field label="Password" name="password" type={show ? "text" : "password"} autoComplete="current-password" required validate={rules.password} error={fields.password}
         trailing={<PasswordToggle shown={show} onToggle={() => setShow((s) => !s)} />}
         hint={caps ? <span className="font-medium text-stamp-ink">Caps Lock is on</span> : undefined} />
+      <div ref={human.ref} className="flex justify-center empty:hidden" />
       <StagedButton stage={stage} />
       <p className="text-center text-[14px] text-graphite">New here? <Link href="/register" className="font-semibold text-ink underline-offset-4 hover:underline">Create an account</Link></p>
     </form>

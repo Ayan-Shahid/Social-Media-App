@@ -10,14 +10,24 @@ export const notificationsRouter = Router();
 notificationsRouter.get("/", async (req, res) => {
   const me = requireUser(req);
   const out = await asUser(me, async (tx) => {
-    // Likes and reposts on the same post within a day are grouped; everything else is one row each.
+    // Likes and reposts are stored merged per post per day (actor_count, recent_actors). Rows from before
+    // that change are one per like, so they're still grouped here the same way; everything else is one row each.
     const r = await tx.execute<{ type: string; post_id: string | null; comment_id: string | null; live_id: string | null; actors: string[]; total: number; latest: string; unread: boolean }>(sql`
-      select type, post_id, max(comment_id::text) as comment_id, max(live_id::text) as live_id,
-        (array_agg(actor_id order by created_at desc))[1:3] as actors, count(*)::int as total,
-        max(created_at) as latest, bool_or(read_at is null) as unread
-      from notifications
-      where created_at > now() - interval '30 days' and not app.blocked_with(actor_id)
-      group by type, post_id, case when type in ('like', 'repost') then date_trunc('day', created_at)::text else id::text end
+      with n as (
+        select *, case when type in ('like', 'repost') then coalesce(bucket::text, date_trunc('day', created_at)::date::text) else id::text end as g
+        from notifications where created_at > now() - interval '30 days'
+      ), groups as (
+        select type, post_id, g, max(comment_id::text) as comment_id, max(live_id::text) as live_id,
+          sum(actor_count)::int as total, max(created_at) as latest, bool_or(read_at is null) as unread
+        from n group by type, post_id, g
+      ), people as (
+        select n.type, n.post_id, n.g, (array_agg(x.a order by n.created_at desc, x.o))[1:3] as actors
+        from n cross join lateral unnest(n.recent_actors) with ordinality as x(a, o)
+        where not app.blocked_with(x.a)
+        group by n.type, n.post_id, n.g
+      )
+      select groups.*, people.actors from groups
+      join people on people.type = groups.type and people.g = groups.g and people.post_id is not distinct from groups.post_id
       order by latest desc limit 60`);
     const users = await getUsers(tx, r.rows.flatMap((x) => x.actors));
     const postIds = [...new Set(r.rows.flatMap((x) => (x.post_id ? [x.post_id] : [])))];

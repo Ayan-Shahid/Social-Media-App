@@ -44,7 +44,7 @@ browser ─▶ Cloudflare Tunnel ─▶ Caddy ┼─▶ api-1, api-2 (round-robi
                                      └─▶ storage (GET /media/*, signed PUT /uploads/*)    ▼
                                               ▲                     relay ─▶ BullMQ (redis-queue) ─▶ worker
                                               └──────────────── worker writes processed media ◀──┘
-   redis-cache: cache, rate limits, presence    ·    redis-queue: jobs + realtime event stream
+   redis-cache: cache, counters, presence, realtime stream    ·    redis-queue: jobs + rate-limit buckets
 ```
 
 How a post travels: the API writes the post **and** an outbox event in one transaction, and returns. The relay moves the event to a queue. The worker pushes the post id into each follower's feed in Redis (or skips accounts with huge followings, which are merged in at read time). Then it sends notifications, which reach the browser over the websocket of whichever API instance the recipient is connected to.
@@ -66,6 +66,9 @@ The whole stack is limited to about 3.8 GB of memory (see `deploy.resources` in 
 - `ADMIN_USERNAMES=yourname`: shows the **Ops** page and the queue dashboard (`/admin/queues`) to that account.
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: turn on Continue with Google. In Google Cloud Console, create an OAuth client (Web application) with the redirect URI `<APP_ORIGIN>/api/auth/google/callback`.
 - `FANOUT_THRESHOLD=3`: makes the "celebrity" pull path kick in for small demos.
+- `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`: Cloudflare's "are you human" check on sign-up, and on login after 3 failed attempts (docs/DEPLOY.md, step 2c).
+
+**Abuse protection:** per-account token-bucket rate limits on every action, with stricter ones on login and sign-up (docs/v2/DECISIONS.md D20). Likes are built to take a crowd (D21, and `scripts/bench-likes.mjs`).
 
 ### Production: automatic deploys to the MacBook
 

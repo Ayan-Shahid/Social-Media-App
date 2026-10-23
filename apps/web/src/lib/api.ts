@@ -2,7 +2,14 @@
 // and the Idempotency-Key header to "create" actions, so a double click or retry can't run twice.
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public fields?: Record<string, string>) { super(message); }
+  constructor(public status: number, message: string, public fields?: Record<string, string>,
+    /** Extra flags from the API, e.g. { captchaRequired: true } or { retryAfter: 12 }. */
+    public data: { captchaRequired?: boolean; retryAfter?: number } = {}) { super(message); }
+}
+
+/** A short message at the bottom of the screen (components/Notices.tsx). */
+export function notice(message: string, tone: "warning" | "info" | "error" = "warning") {
+  window.dispatchEvent(new CustomEvent("glimpse:notice", { detail: { message, tone } }));
 }
 
 function readCsrf() {
@@ -43,6 +50,8 @@ export async function api<T>(path: string, opts: Opts = {}): Promise<T> {
   const data = await res.json().catch(() => ({}));
   // Session gone (expired, logged out in another tab or device): let the app sign out everywhere.
   if (res.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event("glimpse:unauthorized"));
-  if (!res.ok) throw new ApiError(res.status, data.error ?? "Something went wrong.", data.fields);
+  // Rate limited (DECISIONS.md D20): say so once, here, for every action. Forms show their own copy too.
+  if (res.status === 429 && !path.startsWith("/api/auth/")) notice(data.error ?? "You're doing that too fast. Try again in a moment.");
+  if (!res.ok) throw new ApiError(res.status, data.error ?? "Something went wrong.", data.fields, { captchaRequired: data.captchaRequired, retryAfter: data.retryAfter });
   return data as T;
 }

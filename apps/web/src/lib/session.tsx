@@ -14,9 +14,9 @@ interface SessionCtx {
   privateKey: Uint8Array | null;
   myPublicKey: string | null;
   /** onStep reports the real steps, for the button: "verify" (server), "unlock" (Argon2 key derivation here). */
-  login(email: string, password: string, onStep?: (s: "verify" | "unlock") => void): Promise<void>;
+  login(email: string, password: string, onStep?: (s: "verify" | "unlock") => void, captchaToken?: string): Promise<void>;
   /** "keys" (generating the key pair + Argon2-protected backup here), then "create" (server). */
-  register(username: string, email: string, password: string, onStep?: (s: "keys" | "create") => void): Promise<void>;
+  register(username: string, email: string, password: string, onStep?: (s: "keys" | "create") => void, captchaToken?: string): Promise<void>;
   logout(): Promise<void>;
   /** Unlocks the message key with the password (or chat passcode for Google accounts). */
   unlock(secret: string): Promise<void>;
@@ -82,9 +82,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return () => { channel?.removeEventListener("message", onMsg); window.removeEventListener("glimpse:unauthorized", signedOut); };
   }, [qc, refreshMe, me]);
 
-  const login = useCallback(async (email: string, password: string, onStep?: (s: "verify" | "unlock") => void) => {
+  const login = useCallback(async (email: string, password: string, onStep?: (s: "verify" | "unlock") => void, captchaToken?: string) => {
     onStep?.("verify");
-    const r = await api<{ user: User; keyBackup: KeyBackup | null }>("/api/auth/login", { method: "POST", body: { email, password } });
+    const r = await api<{ user: User; keyBackup: KeyBackup | null }>("/api/auth/login", { method: "POST", body: { email, password, captchaToken } });
     if (r.keyBackup?.kind !== "passcode" && r.keyBackup) onStep?.("unlock");
     if (r.keyBackup?.kind !== "passcode" && r.keyBackup) await adoptKey(r.user.id, await unlockBackup(r.keyBackup, password)).catch(() => {});
     qc.clear();
@@ -92,11 +92,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     tellOtherTabs({ type: "login" });
   }, [qc, adoptKey, refreshMe]);
 
-  const register = useCallback(async (username: string, email: string, password: string, onStep?: (s: "keys" | "create") => void) => {
+  const register = useCallback(async (username: string, email: string, password: string, onStep?: (s: "keys" | "create") => void, captchaToken?: string) => {
     onStep?.("keys");
     const keys = await createKeys(password);
     onStep?.("create");
-    const r = await api<{ user: User }>("/api/auth/register", { method: "POST", body: { username, email, password, keys: keys.upload } });
+    const r = await api<{ user: User }>("/api/auth/register", { method: "POST", body: { username, email, password, keys: keys.upload, captchaToken } });
     await adoptKey(r.user.id, keys.privateKey);
     qc.clear();
     await refreshMe();

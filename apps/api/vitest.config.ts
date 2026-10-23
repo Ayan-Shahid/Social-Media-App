@@ -20,7 +20,8 @@ export default defineConfig({
       S3_ACCESS_KEY: "test", S3_SECRET_KEY: "test",
       REDIS_CACHE_URL: process.env.TEST_REDIS_CACHE_URL ?? "redis://localhost:6380/14",
       REDIS_QUEUE_URL: process.env.TEST_REDIS_QUEUE_URL ?? "redis://localhost:6381/14",
-      TEST_REDIS_LIMITS: "1",
+      // Normal tests act much faster than people; limits tests set the scale back to 1 (setLimitScale).
+      RATE_LIMIT_SCALE: "1000",
       FANOUT_THRESHOLD: "3",
       GOOGLE_CLIENT_ID: "test-client-id",
       GOOGLE_CLIENT_SECRET: "test-secret",

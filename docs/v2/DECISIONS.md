@@ -109,6 +109,8 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 
 **Why:** reads become one Redis call, and there's no hot-row lock on viral posts. **Drift repair:** if an increment is lost, the 1-hour expiry forces a recount from Postgres.
 
+**Updated (D21):** the increment now runs only *after* the like's transaction commits (before, a failed commit could leave the number one too high for up to an hour), and a missing hash is recounted once, not once per request.
+
 ## D10. Background: a live shader for the wall only, grid-matrix cards, and a 3D camera ✅
 
 **History.** The first version ran one WebGL canvas that drew the wall *and* the cards' paper (from their screen rectangles). While scrolling, card content moved a frame before the shader caught up, so contents and their backgrounds visibly separated. The fix keeps the canvas but takes the cards out of it.
@@ -154,7 +156,22 @@ Queues: `media` (concurrency 1 for video, 3 for images), `fanout`, `notify`, `ma
 - **Trust nothing the browser declared.** On `complete`, the API checks the stored size and the magic bytes of the first 4 KB. The worker checks the type again on the full file before decoding. A mismatch fails the upload and deletes the object.
 - **Same-origin through Caddy.** URLs are signed for the public address. Caddy forwards `PUT /uploads/*` to storage with the Host header untouched (the signature covers it), and `GET /media/*` with `nosniff` and a sandbox CSP. Any other method on those paths gets a 405, so originals can't be read from outside even if storage were misconfigured. No CORS setup is needed.
 - **RLS for the state machine.** The app role may update a media row only while it's the owner's and still `uploading`, and only to `processing` or `failed`. Everything after that belongs to the worker role.
-- **Cleanup.** Uploads never completed are deleted after an hour, and unused media after a day (maintenance job).
+- **Cleanup, in two phases, so the database never forgets a file it hasn't deleted** (updated). Uploads never completed (after an hour) and media nothing uses (after a day) are first marked `deleting`. At least 10 minutes later the files are deleted, *then* the row. If storage refuses, the row stays `deleting` and the next hourly run retries. Before deleting, each row is checked once more; if something started using it, it's put back. Only `ready` media can go into a post, checked by the route and again by the database's insert policy, so a row being deleted can't be attached.
+- **Weekly safety net** (`storage.reconcile`): lists both buckets and deletes files older than a day whose media row doesn't exist. It catches anything the rules above miss, including future bugs, and reports what it found on the Ops page.
+
+What happens when one side fails:
+
+| Fails | Left behind | Resolved by |
+|---|---|---|
+| Database, when asking for a slot | nothing (no row, no signed URL) | the user retries |
+| Upload to storage | row `uploading`, no file | browser retry within 10 min, else hourly cleanup |
+| `complete` never sent (tab closed) | row `uploading` + file | hourly cleanup (both) |
+| File fails the size/type check | — | file deleted at once, row `failed` |
+| Database, while marking `processing` | row `uploading` + file | `complete` is safe to repeat; else cleanup |
+| Worker crash / storage blip while processing | partial variants | 5 retries with backoff; variants have fixed keys, so retries overwrite |
+| All retries fail | — | row `failed`, partial files and original deleted, job kept in the dead-letter set |
+| Post creation after media is `ready` | unused media | cleanup after a day |
+| Deleting files during cleanup | row `deleting` | next run retries; the weekly check is the backstop |
 
 **Trade-off:** public media URLs are unguessable but not signed per viewer. A follower of a private account who copies an image URL can share it, as with most CDNs. Per-viewer signed GET URLs would close that, at the cost of HTTP caching and cache entries that expire.
 
@@ -221,3 +238,67 @@ Every encrypted message's plaintext is a small JSON envelope: text, a shared pos
 - **Secrets** stay in `~/glimpse/.env` on the Mac (mode 600). `deploy.sh` refuses example values and an `APP_ORIGIN` that doesn't match the public URL.
 
 **Tested here:** both scripts pass shellcheck, and the workflow passes actionlint. `deploy.sh` was exercised end to end with stand-in `docker`/`curl` commands: first deploy, normal deploy, a build that fails health checks (rolled back), a failed migration (rolled back), and refusal of a wrong `APP_ORIGIN` or an example secret. **Not yet run:** the workflow on GitHub and the runner on the Mac.
+
+## D20. Abuse protection: token-bucket rate limits, Cloudflare in front, Turnstile on sign-in (added) ✅
+
+The API has to be public: the frontend runs in each visitor's browser and calls it directly, so anything the app can send, curl can send too. Protection comes from **who** is asking (session + row-level security) and **how fast**, not from where the request comes from.
+
+**Three layers:**
+1. **Cloudflare, before anything reaches the Mac.** One rate-limiting rule on the free plan, which counts per IP over 10 seconds: block an IP that sends more than ~200 requests to `/api/` in 10 s, for 10 s. It's deliberately loose. In Pakistan whole neighbourhoods and mobile networks share an IP (carrier-grade NAT), so this is only a flood guard.
+2. **The app, per account.** Token buckets in Redis, shared by both API instances (`lib/limits.ts`). Signed-in requests are counted per account, so logging in from 50 IPs doesn't give 50× the allowance and people sharing an IP don't eat each other's allowance. Logged-out requests are counted per IP.
+3. **Turnstile** (Cloudflare's invisible "are you human" check) on sign-up always, and on login after 3 failures from an IP or for an account in 15 minutes. It's verified on the server, single-use, for the right action (a login token can't be used to sign up) and for this hostname.
+
+**Why token buckets, not fixed windows:** a bucket starts full and refills steadily, so short bursts are fine (liking 15 posts while scrolling) but a script that keeps going runs dry. A fixed window (express-rate-limit's default) allows double the limit across the window boundary. All of a rule's buckets (e.g. comments: 20/hour *and* 200/day) are checked and spent in one Lua script, atomically, using Redis's clock so instances agree.
+
+| Rule | Burst | Refill | Applies to |
+|---|---:|---|---|
+| engage | 30 | 1/s | like/unlike, save, repost, comment likes, story views |
+| comment | 10 | 20/hour (+200/day) | new comments |
+| follow | 20 | 60/hour (+200/day) | follow/unfollow, remove follower, accept/decline requests |
+| publish | 10 | 30/hour | posts, shorts, stories, going live |
+| upload | 30 | 120/hour | upload slots |
+| message | 30 | 1/s | chat messages |
+| write | 60 | 2/s | every other change (on top of the specific rule) |
+| read | 120 | 5/s | every GET under /api |
+| login | 10 | 10 per 15 min | per IP, **and** per account (hashed email) |
+| register | 10 | 10/hour | per IP |
+| oauth | 30 | 30 per 15 min | per IP |
+
+**What the user sees:** `429` with `Retry-After` and a message that says how long to wait. The web app shows it in a toast and undoes the optimistic like.
+
+**If Redis is unreachable:** each rule says. Likes, reads, posts and so on **fail open** (allowed), because a Redis blip shouldn't take the app down. Login, sign-up and Google sign-in **fail closed** (`503`), because that's what attackers target. Each check gives up after 500 ms.
+
+**Where counters live:** on the queue Redis (AOF, `noeviction`), not the cache Redis. An evicted bucket would silently reset someone's limit.
+
+**Trade-offs:**
+- A per-account login limit lets someone lock a person out for up to 15 minutes by guessing wrong passwords. With Turnstile on, each guess costs them a solved challenge.
+- `RATE_LIMIT_SCALE` multiplies every limit. It's 1 in production; tests and load tests raise it.
+
+## D21. Likes at scale (added) ✅
+
+What happens on a like, and what stops it falling over when many people like at once:
+1. **Browser:** the heart and count change immediately (optimistic), then take the server's count. If the request fails or is rate-limited, they're undone.
+2. **API, one transaction:**
+   - Insert `(post, user)`; the primary key makes double taps, retries and two devices count once.
+   - Row-level security checks you can see the post.
+   - The outbox event is written in the same transaction.
+   - **After commit**, the Redis count is incremented.
+3. **Worker:** the notification, merged (below).
+
+**Why simultaneous likes don't contend:** each like is its own row. There's no `like_count` column that every like would have to lock and update in turn. Redis runs one command at a time, so concurrent `HINCRBY`s never lose an update.
+
+**One recount per hot post.** When a post's count hash expires, the first request recounts from Postgres and the rest wait for that result: in-process they share a promise, across instances a short Redis lock. Test: 60 simultaneous readers → 1 recount (8 without this).
+
+**Merged notifications.** Likes and reposts are no longer one notification row (and one live push) per like:
+- **One row per post per day.** It holds `actor_count` and the latest three names, so a viral post is one row: "leo and 4,182 others liked your post".
+- **Counts people, not likes.** A HyperLogLog per post per day remembers who's been counted, so like → unlike → like is still one person. It uses at most 12 KB, has about 1% error, and expires after 2 days.
+- **Exactly once.** The outbox event is marked `notified_at` in the same transaction as the merge, so a retried job finds it already done.
+- **At most one live push per post per person every 5 seconds.**
+- **Trade-off:** the merged row is itself a hot row on a viral post. Workers update it one at a time (row lock), which is fine at thousands per second. At Instagram scale you'd aggregate in memory and flush every second.
+
+**Measured** (docs/v2/BENCHMARKS.md §3): about 230–260 likes/s sustained through Caddy and both API instances on a 2-vCPU sandbox that also runs Postgres, Redis and the load generator. Every count was correct, and thousands of like events became one notification row.
+
+**What Instagram scale would add:**
+- Likes go to a log first (Kafka, or Redis Streams, which Glimpse already uses), and are written in batches.
+- The likes table is sharded by post.
+- Very hot posts get a sharded counter, displayed rounded ("1.2M").

@@ -7,10 +7,10 @@
 //  3. post:{id}:stats  shared, write-through hash, 1 h -> like/comment/repost counts
 //  4. per-viewer flags NOT cached: one batched query per request (likedByMe, savedByMe, repostedByMe)
 import { sql } from "drizzle-orm";
-import type { Tx } from "../db/client.js";
+import { asUser, type Tx } from "../db/client.js";
 import { cachedMany } from "../infra/cache.js";
 import { keys, redis } from "../infra/redis.js";
-import { cacheHits, cacheMisses } from "../infra/metrics.js";
+import { cacheHits, cacheMisses, dbLoads } from "../infra/metrics.js";
 import type { MediaVariants } from "../db/schema.js";
 import { uuidList } from "../lib/sql.js";
 
@@ -82,43 +82,121 @@ export async function loadPosts(tx: Tx, missing: string[]): Promise<Map<string, 
   }
 }
 
-/** Counts from the stats hash; any missing hash is rebuilt from Postgres (the source of truth). */
-export async function getStats(tx: Tx, ids: string[]) {
-  const out = new Map<string, { likes: number; comments: number; reposts: number }>();
-  if (!ids.length) return out;
+type Stats = { likes: number; comments: number; reposts: number };
+type Recount = (ids: string[]) => Promise<Map<string, Stats>>;
+
+const STATS_FIELDS = ["likes", "comments", "reposts"] as const;
+const statsInflight = new Map<string, Promise<Stats | undefined>>(); // same-process single-flight
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function readStats(ids: string[]) {
   const pipe = redis.pipeline();
-  for (const id of ids) pipe.hmget(keys.postStats(id), "likes", "comments", "reposts");
+  for (const id of ids) pipe.hmget(keys.postStats(id), ...STATS_FIELDS);
   const res = await pipe.exec();
-  const missing: string[] = [];
+  const out = new Map<string, Stats>();
   ids.forEach((id, i) => {
     const v = res?.[i]?.[1] as (string | null)[] | undefined;
-    if (!v || v.some((x) => x === null)) missing.push(id);
-    else out.set(id, { likes: +v[0]!, comments: +v[1]!, reposts: +v[2]! });
+    if (v && v.every((x) => x !== null)) out.set(id, { likes: +v[0]!, comments: +v[1]!, reposts: +v[2]! });
   });
-  cacheHits.inc({ cache: "stats" }, ids.length - missing.length);
-  if (missing.length) {
-    cacheMisses.inc({ cache: "stats" }, missing.length);
-    const idList = uuidList(missing);
-    const r = await tx.execute<{ id: string; likes: number; comments: number; reposts: number }>(sql`
+  return out;
+}
+
+/** The recount, straight from Postgres (the source of truth). Writes the hash back for everyone. */
+function recountWith(tx: Tx): Recount {
+  return async (ids) => {
+    dbLoads.inc({ cache: "stats" });
+    const r = await tx.execute<{ id: string } & Stats>(sql`
       select p.id,
         (select count(*)::int from post_likes l where l.post_id = p.id) as likes,
         (select count(*)::int from comments c where c.post_id = p.id) as comments,
         (select count(*)::int from reposts r where r.post_id = p.id) as reposts
-      from posts p where p.id in ${idList}`);
+      from posts p where p.id in ${uuidList(ids)}`);
+    const out = new Map<string, Stats>();
     const w = redis.pipeline();
     for (const s of r.rows) {
       out.set(s.id, { likes: s.likes, comments: s.comments, reposts: s.reposts });
       w.hset(keys.postStats(s.id), { likes: s.likes, comments: s.comments, reposts: s.reposts }).expire(keys.postStats(s.id), STATS_TTL);
     }
     await w.exec();
+    return out;
+  };
+}
+
+/**
+ * Missing counts, loaded ONCE however many requests ask at the same moment (a hot post whose hash
+ * just expired). In this process, later callers share the first caller's promise. Across instances,
+ * a short Redis lock per post: the holder recounts, the others wait up to ~1.5 s for its result.
+ */
+async function loadMissing(ids: string[], recount: Recount) {
+  const out = new Map<string, Stats>();
+  const mine: string[] = [];
+  const waits: Promise<void>[] = [];
+  const retry: string[] = [];
+  for (const id of ids) {
+    const p = statsInflight.get(id);
+    // (A shared result can be missing: the other caller may not be allowed to see this post. Then recount.)
+    if (p) waits.push(p.then((v) => { if (v) out.set(id, v); else retry.push(id); }));
+    else mine.push(id);
+  }
+  if (mine.length) {
+    let resolveAll!: (m: Map<string, Stats>) => void;
+    const batch = new Promise<Map<string, Stats>>((r) => { resolveAll = r; });
+    for (const id of mine) statsInflight.set(id, batch.then((m) => m.get(id)));
+    try {
+      const locks = await Promise.all(mine.map((id) => redis.set(keys.lock(keys.postStats(id)), "1", "PX", 3000, "NX")));
+      const locked = mine.filter((_id, i) => locks[i]);
+      let others = mine.filter((_id, i) => !locks[i]);
+      const got = locked.length ? await recount(locked) : new Map<string, Stats>();
+      // Another instance is recounting these: wait for its result instead of repeating the query.
+      for (let i = 0; i < 15 && others.length; i++) {
+        await sleep(100);
+        const v = await readStats(others);
+        for (const [id, st] of v) got.set(id, st);
+        others = others.filter((id) => !v.has(id));
+      }
+      if (others.length) for (const [id, st] of await recount(others)) got.set(id, st); // it gave up or crashed
+      if (locked.length) await redis.del(...locked.map((id) => keys.lock(keys.postStats(id))));
+      for (const [id, st] of got) out.set(id, st);
+      resolveAll(got);
+    } catch (e) {
+      resolveAll(new Map());
+      throw e;
+    } finally {
+      for (const id of mine) statsInflight.delete(id);
+    }
+  }
+  await Promise.all(waits);
+  if (retry.length) for (const [id, st] of await recount(retry)) out.set(id, st);
+  return out;
+}
+
+async function statsVia(ids: string[], recount: Recount) {
+  if (!ids.length) return new Map<string, Stats>();
+  const out = await readStats(ids);
+  const missing = ids.filter((id) => !out.has(id));
+  cacheHits.inc({ cache: "stats" }, ids.length - missing.length);
+  if (missing.length) {
+    cacheMisses.inc({ cache: "stats" }, missing.length);
+    for (const [id, st] of await loadMissing(missing, recount)) out.set(id, st);
   }
   return out;
 }
 
-/** Write-through counter update: only if the hash exists (a missing hash is rebuilt correctly on next read). */
+/** Counts from the stats hash; any missing hash is rebuilt from Postgres, once (see loadMissing). */
+export const getStats = (tx: Tx, ids: string[]) => statsVia(ids, recountWith(tx));
+
+/** Same, outside a transaction: opens one (as `viewer`) only if something has to be recounted. */
+export const getStatsAs = (viewer: string, ids: string[]) =>
+  statsVia(ids, (missing) => asUser(viewer, (tx) => recountWith(tx)(missing)));
+
+/**
+ * Write-through counter update: only if the hash exists (a missing hash is rebuilt correctly on next read).
+ * Call it AFTER the transaction that changed the rows has committed, never inside it: a rolled-back
+ * like must not move the number.
+ */
 const BUMP = `if redis.call('exists', KEYS[1]) == 1 then return redis.call('hincrby', KEYS[1], ARGV[1], ARGV[2]) end return nil`;
 export const bumpStat = (postId: string, field: "likes" | "comments" | "reposts", by: number) =>
-  redis.eval(BUMP, 1, keys.postStats(postId), field, by);
+  redis.eval(BUMP, 1, keys.postStats(postId), field, by).catch(() => null); // Redis down: the count heals on expiry
 
 export interface FeedRef { postId: string; repostedBy?: string }
 

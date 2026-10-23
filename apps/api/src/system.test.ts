@@ -41,10 +41,13 @@ describe("transactional outbox", () => {
     await stopWorkers();
     for (const c of [bob, carol, dave]) expect((await c.send("put", `/api/posts/${p.id}/like`)).status).toBe(200);
     expect(await unpublished()).toBeGreaterThanOrEqual(3); // sitting safely in Postgres
-    const before = (await notificationsFor(alice.user!.id)).length;
+    // Likes are merged into one notification per post per day, so count actors, not rows.
+    const actors = async () => (await notificationsFor(alice.user!.id)).reduce((n, r) => n + r.actor_count, 0);
+    const before = await actors();
     await startWorkers();
     await waitFor(async () => (await unpublished()) === 0, 20000, "outbox drained");
-    await waitFor(async () => (await notificationsFor(alice.user!.id)).length >= before + 3, 20000, "notifications");
+    await waitFor(async () => (await actors()) >= before + 3, 20000, "notifications");
+    expect((await notificationsFor(alice.user!.id)).filter((r) => r.type === "like" && r.post_id === p.id)).toHaveLength(1);
   });
 
   it("a rolled-back change produces no event", async () => {
@@ -158,7 +161,8 @@ describe("caching", () => {
 
 describe("two API processes behind one Redis", () => {
   const procs: ChildProcess[] = [];
-  const env = (port: number, id: string) => ({ ...process.env, PORT: String(port), INSTANCE_ID: id, NODE_ENV: "test" });
+  // Real limits in these two processes (the in-process tests run with them raised).
+  const env = (port: number, id: string) => ({ ...process.env, PORT: String(port), INSTANCE_ID: id, NODE_ENV: "test", RATE_LIMIT_SCALE: "1" });
   const startApi = (port: number, id: string) => new Promise<void>((resolve, reject) => {
     const p = spawn("node", ["dist/server.js"], { env: env(port, id), stdio: ["ignore", "pipe", "pipe"] });
     procs.push(p);

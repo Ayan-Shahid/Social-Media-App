@@ -2,7 +2,8 @@ import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 
 export class HttpError extends Error {
-  constructor(public status: number, message: string, public fields?: Record<string, string>) { super(message); }
+  /** `extra` is merged into the JSON body (e.g. { captchaRequired: true }). */
+  constructor(public status: number, message: string, public fields?: Record<string, string>, public extra?: Record<string, unknown>) { super(message); }
 }
 
 export const badRequest = (message: string, fields?: Record<string, string>) => new HttpError(400, message, fields);
@@ -24,7 +25,7 @@ export function requireUser(req: Request): string {
 }
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction) {
-  if (err instanceof HttpError) return res.status(err.status).json({ error: err.message, fields: err.fields });
+  if (err instanceof HttpError) return res.status(err.status).json({ ...err.extra, error: err.message, fields: err.fields });
   const e = err as { code?: string; type?: string; status?: number };
   if (e?.type === "entity.too.large") return res.status(413).json({ error: "Request too large." });
   if (e?.type === "entity.parse.failed") return res.status(400).json({ error: "Invalid JSON." });

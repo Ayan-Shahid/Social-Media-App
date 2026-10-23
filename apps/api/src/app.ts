@@ -9,6 +9,7 @@ import { config, isProd } from "./config.js";
 import { errorHandler } from "./lib/http.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import { csrfMiddleware } from "./middleware/csrf.js";
+import { limit } from "./lib/limits.js";
 import { httpDuration } from "./infra/metrics.js";
 import { queue, QUEUES } from "./infra/queues.js";
 import { authRouter } from "./routes/auth.js";
@@ -66,6 +67,12 @@ export function createApp() {
   app.use(cookieParser());
   app.use(express.json({ limit: "64kb" }));
   app.use("/api", sessionMiddleware, csrfMiddleware);
+  // Rate limits (DECISIONS.md D20). Sign-in routes have their own, stricter ones.
+  const readLimit = limit("read"), writeLimit = limit("write");
+  app.use("/api", (req, res, next) => {
+    if (req.path.startsWith("/auth/")) return next();
+    return (req.method === "GET" || req.method === "HEAD" ? readLimit : writeLimit)(req, res, next);
+  });
 
   app.use("/api/public", publicRouter);
   app.use("/api/auth", authRouter);

@@ -12,7 +12,7 @@ import { asUser } from "../db/client.js";
 import { conversationMembers, conversations, groupKeys, keyBackups, messages, publicKeys } from "../db/schema.js";
 import { badRequest, HttpError, notFound, parse, requireUser } from "../lib/http.js";
 import { idempotent } from "../middleware/idempotency.js";
-import { limiter } from "../lib/limits.js";
+import { limit } from "../lib/limits.js";
 import { publish } from "../infra/bus.js";
 import { getUsers, type PublicUser } from "../services/hydrate.js";
 import { uuidList } from "../lib/sql.js";
@@ -247,9 +247,8 @@ conversationsRouter.get("/:id/messages", async (req, res) => {
 });
 
 const sendSchema = z.object({ ciphertext: b64.min(20).max(20000), nonce: b64.min(30).max(40), epoch: z.number().int().min(1).optional() });
-const sendLimiter = limiter("send", 60_000, 60, "Slow down a little.", true);
 
-conversationsRouter.post("/:id/messages", sendLimiter, idempotent, async (req, res) => {
+conversationsRouter.post("/:id/messages", limit("message"), idempotent, async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   const body = parse(sendSchema, req.body);

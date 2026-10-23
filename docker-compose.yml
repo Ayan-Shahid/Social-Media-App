@@ -26,6 +26,9 @@ x-api: &api
     GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
     FANOUT_THRESHOLD: ${FANOUT_THRESHOLD:-10000}
+    # Cloudflare Turnstile on sign-up/login (docs/DEPLOY.md). Empty = off.
+    TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+    TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
     # Object storage: the API and worker talk to it directly; browsers reach it through Caddy.
     S3_ENDPOINT: http://storage:8333
     S3_PUBLIC_ENDPOINT: ${APP_ORIGIN:-http://localhost:8090}

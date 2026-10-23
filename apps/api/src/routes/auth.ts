@@ -2,9 +2,10 @@ import { Router } from "express";
 import { sql, eq } from "drizzle-orm";
 import { z } from "zod";
 import { hash, verify } from "@node-rs/argon2";
-import { limiter } from "../lib/limits.js";
+import { consume, hashId, limit, LimitsUnavailableError, RateLimitedError, sendLimited } from "../lib/limits.js";
+import { clearLoginFailures, loginNeedsCaptcha, recordLoginFailure, turnstileEnabled, verifyTurnstile } from "../services/turnstile.js";
 import { finishLogin, googleEnabled, startLogin, usernameFrom } from "../services/google.js";
-import { secureCookies } from "../config.js";
+import { config, secureCookies } from "../config.js";
 import { anonymous, asUser } from "../db/client.js";
 import { keyBackups, publicKeys } from "../db/schema.js";
 import { badRequest, HttpError, parse, unauthorized } from "../lib/http.js";
@@ -37,12 +38,10 @@ const registerSchema = z.object({
   email: z.email("Enter a valid email").trim().max(200),
   password: z.string().min(8, "At least 8 characters").max(200),
   keys: keysSchema,
+  captchaToken: z.string().max(2048).optional(),
 });
 
-const loginSchema = z.object({ email: z.string().trim().max(200), password: z.string().max(200) });
-
-const loginLimiter = limiter("login", 15 * 60_000, 10, "Too many attempts. Try again in a few minutes.");
-const registerLimiter = limiter("register", 60 * 60_000, 10, "Too many sign-ups from this network. Try later.");
+const loginSchema = z.object({ email: z.string().trim().max(200), password: z.string().max(200), captchaToken: z.string().max(2048).optional() });
 
 /** Gives the page a CSRF cookie before its first POST (login / register). */
 authRouter.get("/csrf", (_req, res) => {
@@ -50,8 +49,9 @@ authRouter.get("/csrf", (_req, res) => {
   res.json({ ok: true });
 });
 
-authRouter.post("/register", registerLimiter, async (req, res) => {
+authRouter.post("/register", limit("register"), async (req, res) => {
   const body = parse(registerSchema, req.body);
+  await verifyTurnstile(body.captchaToken, "register", req.ip); // always, when Turnstile is on
   const passwordHash = await hash(body.password, ARGON);
   let userId: string;
   try {
@@ -77,12 +77,23 @@ authRouter.post("/register", registerLimiter, async (req, res) => {
   res.status(201).json({ user, keyBackup: stripBackup(backup[0]) });
 });
 
-authRouter.post("/login", loginLimiter, async (req, res) => {
+authRouter.post("/login", limit("login"), async (req, res) => {
   const body = parse(loginSchema, req.body);
+  const ip = req.ip ?? "unknown";
+  const account = hashId(body.email);
+  // Per account as well as per IP: guesses spread over many IPs still hit this.
+  try { await consume("loginAccount", account); }
+  catch (e) { if (e instanceof RateLimitedError || e instanceof LimitsUnavailableError) return sendLimited(res, e); throw e; }
+  // After 3 failures (this IP or this account), a human check is required.
+  if (await loginNeedsCaptcha(ip, account)) await verifyTurnstile(body.captchaToken, "login", ip);
   const r = await anonymous((tx) => tx.execute<{ user_id: string; password_hash: string }>(sql`select * from auth.find_login(${body.email})`));
   const row = r.rows[0];
   const ok = await verify(row?.password_hash ?? DUMMY_HASH, body.password).catch(() => false);
-  if (!row || !ok) throw new HttpError(401, "Wrong email or password.", { password: "Wrong email or password." });
+  if (!row || !ok) {
+    await recordLoginFailure(ip, account);
+    throw new HttpError(401, "Wrong email or password.", { password: "Wrong email or password." });
+  }
+  await clearLoginFailures(account);
   await startSession(res, row.user_id, req.get("user-agent") ?? "");
   const user = await asUser(row.user_id, (tx) => getPublicUser(tx, row.user_id));
   const backup = await asUser(row.user_id, (tx) => tx.select().from(keyBackups).where(eq(keyBackups.userId, row.user_id)));
@@ -123,9 +134,12 @@ function stripBackup(b: typeof keyBackups.$inferSelect | undefined) {
 const OAUTH_COOKIE = secureCookies ? "__Host-glimpse_oauth" : "glimpse_oauth";
 const safeNext = (n: unknown) => (typeof n === "string" && n.startsWith("/") && !n.startsWith("//") ? n : "/");
 
-authRouter.get("/providers", (_req, res) => { res.json({ google: googleEnabled() }); });
+/** What the sign-in pages should show: the Google button, and the Turnstile widget (public site key). */
+authRouter.get("/providers", (_req, res) => {
+  res.json({ google: googleEnabled(), turnstile: turnstileEnabled() ? config.TURNSTILE_SITE_KEY : null });
+});
 
-authRouter.get("/google/start", limiter("oauth", 15 * 60_000, 30, "Too many attempts."), async (req, res) => {
+authRouter.get("/google/start", limit("oauth"), async (req, res) => {
   if (!googleEnabled()) throw new HttpError(404, "Google sign-in isn't set up.");
   const { url, state } = await startLogin(safeNext(req.query.next));
   res.cookie(OAUTH_COOKIE, state, { httpOnly: true, secure: secureCookies, sameSite: "lax", path: "/", maxAge: 600_000 });

@@ -13,6 +13,8 @@ interface Stats {
   caches: { name: string; hits: number; misses: number; dbLoads: number; hitRate: number | null }[];
   queues: Record<string, Record<string, number>>; worker: Record<string, number>;
   redisMemory: string | null; fanoutThreshold: number;
+  rateLimited: Record<string, number>;
+  storageReconcile: { at: string; scanned: number; orphansDeleted: number; unknownKeys: number; skippedTooNew: number } | null;
 }
 
 function Tile({ label, value, sub }: { label: string; value: React.ReactNode; sub?: React.ReactNode }) {
@@ -86,6 +88,32 @@ export default function OpsPage() {
           ))}
         </div>
         {s.worker.fanout_writes !== undefined && <p className="mt-2 text-[12px] text-graphite">Fan-out has written {s.worker.fanout_writes} feed entries.</p>}
+      </section>
+
+      <section>
+        <h2 className="mb-3 font-semibold">Protection and storage</h2>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div data-surface className="rounded-xl p-4">
+            <p className="label">Rate-limited requests (this instance)</p>
+            {Object.keys(s.rateLimited).length === 0 ? <p className="mt-1.5 text-[13px] text-graphite">None since it started.</p> : (
+              <ul className="mt-2 space-y-1 text-[13px]">
+                {Object.entries(s.rateLimited).sort((a, b) => b[1] - a[1]).map(([rule, n]) => (
+                  <li key={rule} className="flex justify-between"><span>{rule}</span><span className="tabular-nums">{n}</span></li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div data-surface className="rounded-xl p-4">
+            <p className="label">Weekly storage check</p>
+            {!s.storageReconcile ? <p className="mt-1.5 text-[13px] text-graphite">Hasn&apos;t run yet. It runs once a week.</p> : (
+              <p className="mt-1.5 text-[13px]">
+                {new Date(s.storageReconcile.at).toLocaleString()}: checked {s.storageReconcile.scanned} files,
+                deleted <span className="font-semibold tabular-nums">{s.storageReconcile.orphansDeleted}</span> the database didn&apos;t know about.
+                {s.storageReconcile.unknownKeys > 0 && <> {s.storageReconcile.unknownKeys} unrecognised (left alone).</>}
+              </p>
+            )}
+          </div>
+        </div>
       </section>
     </div>
   );

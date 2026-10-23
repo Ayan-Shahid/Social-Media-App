@@ -64,6 +64,26 @@ Allow about an hour the first time. After that, deploying is `git push`.
 
 The free plan's 100 MB request limit is above the app's own 60 MB video limit, so uploads fit.
 
+### 2b. A flood guard at Cloudflare (recommended, 2 minutes)
+
+The app has its own per-account rate limits (docs/v2/DECISIONS.md D20). This rule stops a flood from one IP before it even reaches the Mac. The free plan allows one rule, counted per IP over 10 seconds.
+
+Dashboard → ayandev.app → **Security → Security rules → Create rule → Rate limiting rule**:
+- **Name:** `glimpse api flood`
+- **If incoming requests match:** Field *URI Path*, operator *starts with*, value `/api/`. Expression: `(starts_with(http.request.uri.path, "/api/"))`
+- **With the same characteristics:** IP
+- **When rate exceeds:** **200** requests per **10 seconds**
+- **Then:** Block, for 10 seconds
+
+Keep it this loose. Many people in Pakistan share one public IP (mobile networks and ISPs use carrier-grade NAT), so a tight per-IP limit would block real people. The fine-grained limits are in the app, per account.
+
+### 2c. Turnstile: the "are you human" check on sign-up and login (recommended)
+
+1. Dashboard → **Turnstile → Add widget**: name `glimpse`, hostname `glimpse.ayandev.app`, widget mode **Managed**. Leave pre-clearance off.
+2. Copy the **site key** and **secret key** into `~/glimpse/.env` (next step) as `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`. Push or re-run the deploy to pick them up.
+
+Sign-up then always needs a passed check. Login needs one only after 3 failed attempts from an IP or for an account. Most people never see it: Cloudflare only shows a checkbox when it's unsure. Leave both keys empty to turn it off.
+
 ## 3. Secrets: `~/glimpse/.env` (once)
 
 ```bash
@@ -84,6 +104,8 @@ APP_ORIGIN=https://glimpse.ayandev.app     # exactly this: no trailing slash
 HOST_PORT=8090                              # change if Veritas already uses 8090
 ADMIN_USERNAMES=<your username>             # Ops page + queue dashboard
 CLOUDFLARE_TUNNEL_TOKEN=<token from step 2> # Option A only
+TURNSTILE_SITE_KEY=<from step 2c>           # optional
+TURNSTILE_SECRET_KEY=<from step 2c>
 GOOGLE_CLIENT_ID=...                        # optional, see below
 GOOGLE_CLIENT_SECRET=...
 ```
@@ -167,3 +189,5 @@ A rollback starts the *previous* build against the *current* database. That only
 | Page loads blank, console shows CSP errors | Rocket Loader or Email Obfuscation is on (step 2) |
 | Can log in locally but not on the domain | `APP_ORIGIN` isn't exactly `https://glimpse.ayandev.app` |
 | Chat/live don't connect through the domain | Cloudflare WebSockets off, or a cache rule caching `/socket.io/` or `/stream/` |
+| Sign-up says "Please confirm you're human" every time | Turnstile keys swapped, or the widget's hostname isn't `glimpse.ayandev.app` |
+| Many people get "too many requests" at once | The Cloudflare rule in 2b is too tight for a shared IP: raise it |

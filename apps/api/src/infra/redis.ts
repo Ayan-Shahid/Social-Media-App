@@ -1,6 +1,7 @@
 // Two Redis instances with different jobs (DECISIONS.md D1).
-//  - cache: evictable (LRU), no persistence. Cache entries, feeds, counters, presence, rate limits, realtime stream.
-//  - queue: durable (AOF), never evicts. BullMQ only.
+//  - cache: evictable (LRU), no persistence. Cache entries, feeds, counters, presence, realtime stream.
+//  - queue: durable (AOF), never evicts. BullMQ, plus rate-limit buckets (an evicted bucket would
+//    silently reset someone's limit).
 import { Redis, type RedisOptions } from "ioredis";
 import { config } from "../config.js";
 
@@ -13,6 +14,13 @@ export const newBlockingClient = () => new Redis(config.REDIS_CACHE_URL, { ...ba
 
 /** BullMQ needs maxRetriesPerRequest: null so workers wait out Redis restarts instead of crashing. */
 export const queueConnection = () => new Redis(config.REDIS_QUEUE_URL, { maxRetriesPerRequest: null, enableReadyCheck: true });
+
+/**
+ * Rate limits and login-failure counters, on the never-evicting queue Redis (DECISIONS.md D20).
+ * Every check gives up after 500 ms (and at once if a reconnect attempt fails), and the limiter then
+ * decides whether to let the request through (most actions) or refuse it (login, sign-up).
+ */
+export const limitsRedis = new Redis(config.REDIS_QUEUE_URL, { ...base, maxRetriesPerRequest: 0, commandTimeout: 500, connectionName: `limits:${config.INSTANCE_ID}` });
 
 export const keys = {
   post: (id: string) => `post:${id}`,

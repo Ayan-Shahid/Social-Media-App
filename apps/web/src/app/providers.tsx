@@ -4,19 +4,20 @@ import { useState } from "react";
 import { SessionProvider } from "@/lib/session";
 import { RealtimeProvider } from "@/lib/realtime";
 import { ApiError } from "@/lib/api";
+import { Notices } from "@/components/Notices";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [qc] = useState(() => new QueryClient({
     defaultOptions: {
       queries: { staleTime: 30_000, // Coming back to a tab (or the phone after using the desktop) refreshes anything older than staleTime.
-      refetchOnWindowFocus: true, retry: (n, e) => !(e instanceof ApiError && e.status < 500) && n < 2 },
+      refetchOnWindowFocus: true, retry: (n, e) => !(e instanceof ApiError && (e.status < 500 || e.status === 503)) && n < 2 },
       mutations: { retry: 0 },
     },
   }));
   return (
     <QueryClientProvider client={qc}>
       <SessionProvider>
-        <RealtimeProvider>{children}</RealtimeProvider>
+        <RealtimeProvider>{children}<Notices /></RealtimeProvider>
       </SessionProvider>
     </QueryClientProvider>
   );

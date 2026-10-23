@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { limit } from "../lib/limits.js";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../db/client.js";
@@ -151,7 +152,7 @@ usersRouter.patch("/me", async (req, res) => {
 });
 
 /** Follow. For a private account this sends a request instead; the response says which happened. */
-usersRouter.put("/:id/follow", async (req, res) => {
+usersRouter.put("/:id/follow", limit("follow"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   if (id === me) throw badRequest("You can't follow yourself.");
@@ -182,7 +183,7 @@ usersRouter.put("/:id/follow", async (req, res) => {
 });
 
 /** Unfollow, or cancel a pending request. */
-usersRouter.delete("/:id/follow", async (req, res) => {
+usersRouter.delete("/:id/follow", limit("follow"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   const removed = await asUser(me, async (tx) => {
@@ -196,7 +197,7 @@ usersRouter.delete("/:id/follow", async (req, res) => {
 });
 
 /** Remove one of your followers (they keep no access to a private account). */
-usersRouter.delete("/:id/follower", async (req, res) => {
+usersRouter.delete("/:id/follower", limit("follow"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.id);
   const removed = await asUser(me, async (tx) => {
@@ -261,7 +262,7 @@ followRequestsRouter.get("/", async (req, res) => {
   res.json({ requests: list });
 });
 
-followRequestsRouter.post("/:userId/accept", async (req, res) => {
+followRequestsRouter.post("/:userId/accept", limit("follow"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.userId);
   const ok = await asUser(me, async (tx) => {
@@ -274,7 +275,7 @@ followRequestsRouter.post("/:userId/accept", async (req, res) => {
   res.json({ ok: true });
 });
 
-followRequestsRouter.delete("/:userId", async (req, res) => {
+followRequestsRouter.delete("/:userId", limit("follow"), async (req, res) => {
   const me = requireUser(req);
   const id = parse(z.uuid(), req.params.userId);
   await asUser(me, (tx) => tx.delete(followRequests).where(and(eq(followRequests.requesterId, id), eq(followRequests.targetId, me))));

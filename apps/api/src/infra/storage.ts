@@ -94,5 +94,22 @@ export async function removePrefix(bucket: string, prefix: string) {
   } while (token);
 }
 
+/** Every object in a bucket (optionally under a prefix), a page at a time. */
+export async function* listObjects(bucket: string, prefix = "") {
+  let token: string | undefined;
+  do {
+    const r = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token }));
+    for (const o of r.Contents ?? []) yield { key: o.Key!, modified: o.LastModified ?? new Date(0), size: o.Size ?? 0 };
+    token = r.IsTruncated ? r.NextContinuationToken : undefined;
+  } while (token);
+}
+
+/** Deletes one object and throws if storage refused (cleanup must know, to retry). */
+export async function removeObjectOrThrow(bucket: string, key: string) {
+  const r = await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: [{ Key: key }], Quiet: true } }));
+  if (r.Errors?.length) throw new Error(`delete failed: ${r.Errors[0]!.Code}`);
+}
+
+/** Best effort: for paths where a leftover is caught later by the cleanup jobs. */
 export const removeObject = (bucket: string, key: string) =>
   s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: [{ Key: key }], Quiet: true } })).catch(() => {});
