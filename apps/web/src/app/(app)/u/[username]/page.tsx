@@ -1,4 +1,5 @@
 "use client";
+import { ErrorState } from "@/components/ErrorState";
 import Link from "next/link";
 import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -27,7 +28,8 @@ export default function ProfilePage({ params }: { params: Promise<{ username: st
   });
 
   if (profile.isPending) return <div className="flex justify-center py-20"><Spinner /></div>;
-  if (profile.isError) return <Empty title="No one here">This account doesn&apos;t exist.</Empty>;
+  if (profile.isError) return <ErrorState error={profile.error} onRetry={() => profile.refetch()} retrying={profile.isFetching}
+    notFound={{ title: "No one here", body: <>There&apos;s no account called @{username}. Check the spelling.</> }} />;
   const { user, counts, isFollowing, followsMe, isMe, requested, isBlocked, canSeePosts } = profile.data;
   const all = posts.data?.pages.flatMap((p) => p.posts) ?? [];
 
@@ -72,7 +74,9 @@ export default function ProfilePage({ params }: { params: Promise<{ username: st
           <p className="font-semibold">This account is private</p>
           <p className="max-w-xs text-[14px] text-graphite">{requested ? "Your request is waiting for approval." : `Follow ${user.username} to see their photos and videos.`}</p>
         </div>
-      ) : posts.isPending ? <Spinner /> : all.length === 0 ? (
+      ) : posts.isPending ? <Spinner /> : posts.isError && !all.length ? (
+        <ErrorState error={posts.error} onRetry={() => posts.refetch()} retrying={posts.isFetching} />
+      ) : all.length === 0 ? (
         <Empty title={isMe && tab === "posts" ? "Share your first photo" : `No ${tab} yet`}>{isMe && tab !== "reposts" && <Link href={tab === "shorts" ? "/new?kind=short" : "/new"} className="font-semibold text-ink underline underline-offset-4">Create one</Link>}</Empty>
       ) : <PostGrid posts={all} sheet={tab === "posts"} />}
       <LoadMore q={posts} />

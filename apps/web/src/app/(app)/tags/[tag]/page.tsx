@@ -1,4 +1,5 @@
 "use client";
+import { ErrorState } from "@/components/ErrorState";
 import { use } from "react";
 import { LoadMore, useInfinitePosts } from "@/components/Feed";
 import { PostGrid } from "@/components/Grid";
@@ -14,7 +15,7 @@ export default function TagPage({ params }: { params: Promise<{ tag: string }> }
     <div className="mx-auto max-w-[920px]">
       <PageTitle>#{t}</PageTitle>
       <p className="-mt-3 mb-6 text-[14px] text-graphite">{count} post{count === 1 ? "" : "s"}</p>
-      {q.isPending ? <Spinner /> : all.length ? <><PostGrid posts={all} /><LoadMore q={q} /></> : <Empty title="No posts with this tag" />}
+      {q.isPending ? <Spinner /> : q.isError && !all.length ? <ErrorState error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} /> : all.length ? <><PostGrid posts={all} /><LoadMore q={q} /></> : <Empty title="No posts with this tag" />}
     </div>
   );
 }

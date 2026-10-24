@@ -1,4 +1,5 @@
 "use client";
+import { ErrorState } from "@/components/ErrorState";
 import Link from "next/link";
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -54,7 +55,7 @@ export default function NotificationsPage() {
     <div className="mx-auto max-w-[620px]">
       <PageTitle>Notifications</PageTitle>
       <FollowRequests />
-      {q.isPending ? <Spinner /> : !q.data?.length ? <Empty title="Nothing yet">Likes, comments, follows and mentions show up here.</Empty> : (
+      {q.isPending ? <Spinner /> : q.isError && !q.data ? <ErrorState error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} /> : !q.data?.length ? <Empty title="Nothing yet">Likes, comments, follows and mentions show up here.</Empty> : (
         <ul data-surface className="divide-y divide-rule overflow-hidden rounded-2xl">
           {q.data.map((n, i) => {
             const first = n.actors[0]!;

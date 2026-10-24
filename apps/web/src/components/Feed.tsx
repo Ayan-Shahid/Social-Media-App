@@ -1,4 +1,5 @@
 "use client";
+import { ErrorState } from "./ErrorState";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api } from "@/lib/api";
@@ -25,13 +26,15 @@ export function LoadMore({ q }: { q: ReturnType<typeof useInfinitePosts> }) {
     io.observe(el);
     return () => io.disconnect();
   }, [q]);
+  // The next page failed: say so in place, with Retry, instead of silently stopping.
+  if (q.isFetchNextPageError) return <ErrorState compact error={q.error} onRetry={() => q.fetchNextPage()} retrying={q.isFetchingNextPage} />;
   return <div ref={ref} className="flex justify-center py-8">{q.isFetchingNextPage && <Spinner />}</div>;
 }
 
 export function FeedList({ q, empty }: { q: ReturnType<typeof useInfinitePosts>; empty: React.ReactNode }) {
   if (q.isPending) return <div className="flex justify-center py-20"><Spinner /></div>;
-  if (q.isError) return <p className="py-10 text-center text-graphite">Couldn&apos;t load posts. Check your connection and refresh.</p>;
-  const posts = q.data.pages.flatMap((p) => p.posts);
+  if (q.isError && !q.data) return <ErrorState error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} />;
+  const posts = q.data?.pages.flatMap((p) => p.posts) ?? [];
   if (!posts.length) return <>{empty}</>;
   return (
     <div className="space-y-8">

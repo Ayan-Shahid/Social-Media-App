@@ -6,7 +6,8 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useRealtime } from "@/lib/realtime";
 import { useSession } from "@/lib/session";
-import { Empty, PageTitle, Spinner } from "@/components/ui";
+import { PageTitle, Spinner } from "@/components/ui";
+import { ErrorState, Forbidden } from "@/components/ErrorState";
 
 interface Stats {
   instance: string; uptimeSeconds: number; connectionsHere: number; onlineUsers: number;
@@ -34,9 +35,9 @@ export default function OpsPage() {
   const [servedBy, setServedBy] = useState<string[]>([]);
   useEffect(() => { if (q.data) setServedBy((s) => [...s.slice(-11), q.data.instance]); }, [q.data, q.dataUpdatedAt]);
 
-  if (!isAdmin) return <Empty title="Admins only">Add your username to ADMIN_USERNAMES to see this page.</Empty>;
+  if (!isAdmin) return <Forbidden>This page shows how the system is running. It&apos;s for the accounts listed in ADMIN_USERNAMES.</Forbidden>;
   if (q.isPending) return <Spinner />;
-  if (q.isError || !q.data) return <Empty title="Stats unavailable" />;
+  if (!q.data) return <ErrorState error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} />;
   const s = q.data;
 
   return (

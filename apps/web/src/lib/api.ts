@@ -4,7 +4,16 @@
 export class ApiError extends Error {
   constructor(public status: number, message: string, public fields?: Record<string, string>,
     /** Extra flags from the API, e.g. { captchaRequired: true } or { retryAfter: 12 }. */
-    public data: { captchaRequired?: boolean; retryAfter?: number } = {}) { super(message); }
+    public data: { captchaRequired?: boolean; retryAfter?: number; ref?: string; network?: boolean } = {}) { super(message); }
+}
+
+/** The request never got an answer: offline, or Glimpse unreachable. */
+const offline = () => new ApiError(0, navigator.onLine === false ? "You're offline." : "Couldn't reach Glimpse.", undefined, { network: true });
+
+/** fetch, but a network failure becomes an ApiError (status 0) like every other failure. Aborts stay aborts. */
+async function send(path: string, init: RequestInit) {
+  try { return await fetch(path, init); }
+  catch (e) { if ((e as Error)?.name === "AbortError") throw e; throw offline(); }
 }
 
 /** A short message at the bottom of the screen (components/Notices.tsx). */
@@ -19,7 +28,7 @@ function readCsrf() {
 
 async function ensureCsrf() {
   if (readCsrf()) return readCsrf()!;
-  await fetch("/api/auth/csrf", { credentials: "same-origin" });
+  await send("/api/auth/csrf", { credentials: "same-origin" });
   return readCsrf() ?? "";
 }
 
@@ -37,14 +46,14 @@ export async function api<T>(path: string, opts: Opts = {}): Promise<T> {
   if (opts.form) body = opts.form;
   else if (opts.body !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(opts.body); }
 
-  let res = await fetch(path, { method, headers, body, credentials: "same-origin", signal: opts.signal });
+  let res = await send(path, { method, headers, body, credentials: "same-origin", signal: opts.signal });
   // The CSRF cookie can rotate (e.g. after logging in elsewhere). Refresh once and retry.
   if (res.status === 403 && method !== "GET") {
     const j = await res.clone().json().catch(() => ({}));
     if (/CSRF/.test(j.error ?? "")) {
       await fetch("/api/auth/csrf", { credentials: "same-origin" });
       headers["X-CSRF-Token"] = readCsrf() ?? "";
-      res = await fetch(path, { method, headers, body, credentials: "same-origin", signal: opts.signal });
+      res = await send(path, { method, headers, body, credentials: "same-origin", signal: opts.signal });
     }
   }
   const data = await res.json().catch(() => ({}));
@@ -52,6 +61,11 @@ export async function api<T>(path: string, opts: Opts = {}): Promise<T> {
   if (res.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event("glimpse:unauthorized"));
   // Rate limited (DECISIONS.md D20): say so once, here, for every action. Forms show their own copy too.
   if (res.status === 429 && !path.startsWith("/api/auth/")) notice(data.error ?? "You're doing that too fast. Try again in a moment.");
-  if (!res.ok) throw new ApiError(res.status, data.error ?? "Something went wrong.", data.fields, { captchaRequired: data.captchaRequired, retryAfter: data.retryAfter });
+  if (!res.ok) {
+    const fallback = res.status >= 500 ? "Glimpse couldn't do that right now." : "Something went wrong.";
+    throw new ApiError(res.status, data.error ?? fallback, data.fields, {
+      captchaRequired: data.captchaRequired, retryAfter: data.retryAfter, ref: data.ref ?? res.headers.get("x-request-id") ?? undefined,
+    });
+  }
   return data as T;
 }

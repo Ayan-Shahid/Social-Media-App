@@ -8,7 +8,10 @@ import type { KeyBackup, User } from "./types";
 
 interface Me { user: User; chatKeys: "password" | "passcode" | null; isAdmin: boolean }
 interface SessionCtx {
-  me: User | null | undefined; // undefined = still loading
+  me: User | null | undefined; // undefined = still loading (or couldn't be checked: see meError)
+  /** Checking who's signed in failed (server error, offline). Pages show it with a retry. */
+  meError: unknown;
+  retryMe(): void;
   chatKeys: Me["chatKeys"] | undefined;
   isAdmin: boolean;
   privateKey: Uint8Array | null;
@@ -86,7 +89,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     onStep?.("verify");
     const r = await api<{ user: User; keyBackup: KeyBackup | null }>("/api/auth/login", { method: "POST", body: { email, password, captchaToken } });
     if (r.keyBackup?.kind !== "passcode" && r.keyBackup) onStep?.("unlock");
-    if (r.keyBackup?.kind !== "passcode" && r.keyBackup) await adoptKey(r.user.id, await unlockBackup(r.keyBackup, password)).catch(() => {});
+    // A message key that won't unlock must not block logging in: chat stays locked and asks later.
+    if (r.keyBackup?.kind !== "passcode" && r.keyBackup) {
+      try { await adoptKey(r.user.id, await unlockBackup(r.keyBackup, password)); } catch { /* chat shows the unlock screen */ }
+    }
     qc.clear();
     await refreshMe();
     tellOtherTabs({ type: "login" });
@@ -129,9 +135,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await refreshMe();
   }, [me, adoptKey, refreshMe]);
 
+  const meError = data === undefined && meQuery.isError ? meQuery.error : null;
+  const retryMe = useCallback(() => { meQuery.refetch(); }, [meQuery]);
   const value = useMemo(() => ({
-    me, chatKeys: data === undefined ? undefined : data?.chatKeys ?? null, isAdmin: !!data?.isAdmin,
+    me, meError, retryMe, chatKeys: data === undefined ? undefined : data?.chatKeys ?? null, isAdmin: !!data?.isAdmin,
     privateKey, myPublicKey, login, register, logout, unlock, setupPasscode,
-  }), [me, data, privateKey, myPublicKey, login, register, logout, unlock, setupPasscode]);
+  }), [me, meError, retryMe, data, privateKey, myPublicKey, login, register, logout, unlock, setupPasscode]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

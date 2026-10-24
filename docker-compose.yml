@@ -200,6 +200,7 @@ services:
       - "127.0.0.1:${HOST_PORT:-8090}:80"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/errors/down.html:/srv/errors/down.html:ro # shown while the app restarts
     depends_on:
       - api-1
       - api-2

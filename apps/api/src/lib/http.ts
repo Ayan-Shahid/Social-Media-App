@@ -35,7 +35,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   const code = e?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
   if (code === "42501") return res.status(403).json({ error: "Not allowed." });
   req.log?.error({ err }, "unhandled error");
-  return res.status(500).json({ error: "Something went wrong." });
+  return res.status(500).json({ error: "Something went wrong on our side.", ref: req.id });
 }
 
 declare global {

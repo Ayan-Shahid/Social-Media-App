@@ -86,4 +86,23 @@
 			header_up X-Forwarded-For {client_ip}
 		}
 	}
+
+	# Nothing behind Caddy answered (a deploy restarting the containers, or a crash): instead of a blank
+	# 502, the API gets a JSON 503 the app understands, and pages get "back in a moment", which retries.
+	handle_errors 502 503 504 {
+		header Retry-After 5
+		header Cache-Control no-store
+		@api_down path /api/* /socket.io/*
+		handle @api_down {
+			header Content-Type application/json
+			respond `{"error":"Glimpse is restarting. Try again in a moment."}` 503
+		}
+		handle {
+			root * /srv/errors
+			rewrite * /down.html
+			file_server {
+				status 503
+			}
+		}
+	}
 }

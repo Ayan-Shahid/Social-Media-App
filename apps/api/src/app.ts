@@ -1,5 +1,6 @@
 import express from "express";
 import helmet from "helmet";
+import { randomBytes } from "node:crypto";
 import cookieParser from "cookie-parser";
 import { pinoHttp } from "pino-http";
 import { createBullBoard } from "@bull-board/api";
@@ -24,13 +25,29 @@ import { liveRouter } from "./routes/live.js";
 import { publicRouter } from "./routes/public.js";
 import { internalRouter, opsRouter, requireAdmin } from "./routes/ops.js";
 
+const adminOnlyPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Admins only · Glimpse</title>
+<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,sans-serif;background:#eceef1;color:#15171c}
+@media (prefers-color-scheme:dark){body{background:#0f1115;color:#e9ebef}}main{text-align:center;padding:24px}b{display:block;font-size:13px;letter-spacing:.12em;color:#d2691e}
+h1{margin:.3em 0;font-size:22px}a{display:inline-block;margin-top:16px;padding:10px 18px;border-radius:999px;background:currentColor}a span{color:#eceef1}@media (prefers-color-scheme:dark){a span{color:#0f1115}}</style></head>
+<body><main><b>403</b><h1>Admins only</h1><p>The queue dashboard is for accounts listed in ADMIN_USERNAMES.</p><a href="/"><span>Back to Glimpse</span></a></main></body></html>`;
+
 export function createApp() {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", config.TRUST_PROXY); // behind Caddy / Cloudflare: real client IP for rate limits
 
+  // Every request gets a short id: in the log line, in an X-Request-Id header, and in the body of a 500,
+  // so "Error reference 7f3a9c" on screen can be found in the server log.
+  app.use((req, res, next) => {
+    const incoming = req.get("x-request-id");
+    req.id = incoming && /^[A-Za-z0-9-]{6,64}$/.test(incoming) ? incoming : randomBytes(6).toString("hex");
+    res.setHeader("X-Request-Id", String(req.id));
+    next();
+  });
+
   if (config.NODE_ENV !== "test") {
     app.use(pinoHttp({
+      genReqId: (req) => req.id as string,
       level: isProd ? "info" : "debug",
       redact: ["req.headers.cookie", "req.headers['x-csrf-token']", 'res.headers["set-cookie"]'],
       autoLogging: { ignore: (req) => req.url === "/api/health" || req.url === "/api/internal/metrics" },
@@ -53,7 +70,12 @@ export function createApp() {
   const board = new ExpressAdapter();
   board.setBasePath("/admin/queues");
   createBullBoard({ queues: QUEUES.map((q) => new BullMQAdapter(queue(q))), serverAdapter: board });
-  app.use("/admin/queues", cookieParser(), sessionMiddleware, (req, res, next) => requireAdmin(req, res, next).catch(next),
+  // Not an API: a person opened it in the browser. Not signed in -> log in first; signed in but not
+  // an admin -> a readable page, not JSON.
+  app.use("/admin/queues", cookieParser(), sessionMiddleware, (req, res, next) => {
+    if (!req.userId) return res.redirect(302, `/login?next=${encodeURIComponent(req.originalUrl)}`);
+    requireAdmin(req, res, next).catch(() => res.status(403).type("html").send(adminOnlyPage));
+  },
     helmet({ contentSecurityPolicy: false, frameguard: { action: "deny" } }), board.getRouter());
 
   // The API only returns JSON, so it gets the strictest headers: no scripts, no framing.

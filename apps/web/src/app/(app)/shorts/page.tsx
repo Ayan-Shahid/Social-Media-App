@@ -1,5 +1,6 @@
 "use client";
 // Full-height vertical player. Each short plays when it's mostly on screen and pauses when it leaves.
+import { ErrorState } from "@/components/ErrorState";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useInfinitePosts, LoadMore } from "@/components/Feed";
@@ -50,6 +51,7 @@ export default function ShortsPage() {
   const [muted, setMuted] = useState(true); // browsers only autoplay muted video
   if (q.isPending) return <div className="flex justify-center py-20"><Spinner /></div>;
   const posts = q.data?.pages.flatMap((p) => p.posts) ?? [];
+  if (q.isError && !posts.length) return <div className="mx-auto max-w-md"><ErrorState error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} /></div>;
   if (!posts.length) return <div className="mx-auto max-w-md"><Empty title="No shorts yet">Post a vertical video up to 60 seconds from <Link href="/new?kind=short" className="font-semibold text-ink underline underline-offset-4">New post</Link>.</Empty></div>;
   return (
     <div className="-my-6 h-[calc(100dvh-8rem)] snap-y snap-mandatory space-y-6 overflow-y-auto py-2 md:-my-10 md:h-dvh md:py-10 [scrollbar-width:none]">

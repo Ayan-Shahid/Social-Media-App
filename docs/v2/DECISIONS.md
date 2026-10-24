@@ -302,3 +302,23 @@ What happens on a like, and what stops it falling over when many people like at 
 - Likes go to a log first (Kafka, or Redis Streams, which Glimpse already uses), and are written in batches.
 - The likes table is sharded by post.
 - Very hot posts get a sharded counter, displayed rounded ("1.2M").
+
+## D22. Errors people can understand (added) ✅
+
+One component (`components/ErrorState.tsx`) turns any failure into the right message:
+- **404:** "doesn't exist (or is from a private account you don't follow)". A private post looks the same as a missing one on purpose, so the app never confirms it exists.
+- **403:** "not allowed".
+- **429:** slow down, with the wait.
+- **Offline:** "you're offline", and the page loads by itself when the connection is back.
+- **Unreachable:** "couldn't reach Glimpse", with Retry.
+- **5xx:** "something went wrong on our side", with Retry and an **error reference**.
+
+A server error is never shown as "not found" any more.
+
+- **Error references:** every API response has an `X-Request-Id`. The same id is in the log line, and a 500 returns it as `ref` (and nothing else about the error), so a screenshot can be matched to the log.
+- **Lists:** feed, explore, shorts, tags, notifications, saved, messages, comments and profile grids show the same state, and a failed *next page* shows an inline Retry instead of silently stopping.
+- **Crashes:** `error.tsx` boundaries keep the sidebar and re-render only the broken part. `global-error.tsx` covers the root layout itself.
+- **Session check failing** (server down at startup) shows an error with Retry instead of an endless spinner. A message key that won't unlock no longer blocks logging in; chat just stays locked.
+- **Offline:** a banner while the browser is offline. Requests wait and resume by themselves.
+- **Deploys:** while containers restart, Caddy answers pages with a self-reloading "Back in a moment" page (`deploy/errors/down.html`, light and dark), and `/api` with a JSON `503` plus `Retry-After`, which the app retries. Never a blank 502.
+- **Admin areas:** Ops shows a 403 panel. The queue dashboard sends signed-out people to log in and shows non-admins an HTML "Admins only" page instead of raw JSON.

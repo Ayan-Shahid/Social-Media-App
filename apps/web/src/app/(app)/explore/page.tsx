@@ -1,4 +1,5 @@
 "use client";
+import { ErrorState } from "@/components/ErrorState";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useDeferredValue, useState } from "react";
@@ -26,10 +27,13 @@ export default function ExplorePage() {
       {term ? (
         <ul data-surface className="max-w-md space-y-4 rounded-2xl p-4">
           {search.isPending && <Spinner />}
+          {search.isError && <li><ErrorState compact error={search.error} onRetry={() => search.refetch()} retrying={search.isFetching} /></li>}
           {search.data?.map((u) => <li key={u.id}><UserLink user={u} sub={u.displayName} /></li>)}
           {search.data?.length === 0 && <li className="text-graphite">No one called &ldquo;{term}&rdquo;.</li>}
         </ul>
-      ) : posts.isPending ? <Spinner /> : all.length === 0 ? (
+      ) : posts.isPending ? <Spinner /> : posts.isError && !all.length ? (
+        <ErrorState error={posts.error} onRetry={() => posts.refetch()} retrying={posts.isFetching} />
+      ) : all.length === 0 ? (
         <Empty title="Nothing here yet">Be the first: <Link href="/new" className="font-semibold text-ink underline underline-offset-4">share a photo</Link>.</Empty>
       ) : (<><PostGrid posts={all} /><LoadMore q={posts} /></>)}
     </div>

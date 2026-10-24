@@ -1,4 +1,5 @@
 "use client";
+import { ErrorState } from "@/components/ErrorState";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
@@ -47,7 +48,7 @@ export default function SavedPage() {
       </form>
       <ErrorText>{err}</ErrorText>
       {active && <div className="mb-4 flex justify-end"><Button variant="line" size="sm" onClick={() => confirm("Delete this collection? Saved posts stay in All saved.") && remove.mutate(active)}>Delete collection</Button></div>}
-      {posts.isPending ? <Spinner /> : !posts.data?.length ? <Empty title="Nothing saved here">Tap the bookmark on any post to save it.</Empty> : <PostGrid posts={posts.data} />}
+      {posts.isPending ? <Spinner /> : posts.isError && !posts.data ? <ErrorState error={posts.error} onRetry={() => posts.refetch()} retrying={posts.isFetching} /> : !posts.data?.length ? <Empty title="Nothing saved here">Tap the bookmark on any post to save it.</Empty> : <PostGrid posts={posts.data} />}
     </div>
   );
 }

@@ -8,15 +8,18 @@ import clsx from "clsx";
 import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { Avatar, Spinner } from "@/components/ui";
+import { ErrorState } from "@/components/ErrorState";
 import { BellIcon, BookmarkIcon, ChatIcon, GaugeIcon, HomeIcon, MoonIcon, PlayIcon, PlusIcon, SearchIcon, SunIcon } from "@/components/icons";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { me, logout, isAdmin } = useSession();
+  const { me, meError, retryMe, logout, isAdmin } = useSession();
   const router = useRouter();
   const path = usePathname();
   const unread = useQuery({ queryKey: ["unread"], queryFn: () => api<{ count: number }>("/api/notifications/unread-count").then((r) => r.count), enabled: !!me, refetchInterval: 120_000 });
   // Signed out: the home page shows the public landing page; anything else asks to log in first.
   useEffect(() => { if (me === null) router.replace(path === "/" ? "/welcome" : `/login?next=${encodeURIComponent(path)}`); }, [me, router, path]);
+  // Couldn't even check who's signed in (server down, offline): say so, instead of spinning forever.
+  if (meError) return <div className="grid min-h-dvh place-items-center p-6"><div className="w-full max-w-[460px]"><ErrorState error={meError} onRetry={retryMe} /></div></div>;
   if (!me) return <div className="grid min-h-dvh place-items-center"><Spinner /></div>;
 
   const active = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));

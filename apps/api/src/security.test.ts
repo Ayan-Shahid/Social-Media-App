@@ -243,3 +243,27 @@ describe("row-level security (database level, bypassing the API)", () => {
     await expect(asDb(process.env.WORKER_DATABASE_URL!, null, (c) => c.query("select * from key_backups"))).rejects.toThrow(/permission denied/);
   });
 });
+
+describe("error responses", () => {
+  it("every response carries a request id, and a crash returns it as the error reference (no details leak)", async () => {
+    const r = await alice.get("/api/posts/feed");
+    expect(r.headers["x-request-id"]).toMatch(/^[0-9a-f]{12}$/);
+    const { errorHandler } = await import("./lib/http.js");
+    let status = 0, body: Record<string, unknown> = {};
+    const res = { status(s: number) { status = s; return this; }, json(b: Record<string, unknown>) { body = b; return this; } };
+    errorHandler(new Error("db exploded: password=hunter2"), { id: "abc123def456" } as never, res as never, () => {});
+    expect(status).toBe(500);
+    expect(body).toEqual({ error: "Something went wrong on our side.", ref: "abc123def456" });
+  });
+
+  it("queue dashboard: signed out -> sent to log in; signed in but not an admin -> a readable 403 page", async () => {
+    const anon = await request(app).get("/admin/queues");
+    expect(anon.status).toBe(302);
+    expect(anon.headers.location).toBe("/login?next=%2Fadmin%2Fqueues");
+    const r = await bob.get("/admin/queues");
+    expect(r.status).toBe(403);
+    expect(r.headers["content-type"]).toMatch(/text\/html/);
+    expect(r.text).toContain("Admins only");
+    expect((await alice.get("/admin/queues/")).status).toBe(200);
+  });
+});

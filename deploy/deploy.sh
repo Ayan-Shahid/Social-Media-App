@@ -50,9 +50,9 @@ compose() { docker compose --project-name glimpse --project-directory "$APP" -f 
 # Copy in place (cp, not rsync/mv): Docker bind-mounts single files by inode, so replacing the file
 # would leave the running container reading the old one.
 log "Syncing config to $APP"
-mkdir -p "$APP/deploy"
+mkdir -p "$APP/deploy/errors"
 changed=""
-for f in docker-compose.yml deploy/Caddyfile deploy/seaweedfs.sh; do
+for f in docker-compose.yml deploy/Caddyfile deploy/seaweedfs.sh deploy/errors/down.html; do
   if ! cmp -s "$SRC/$f" "$APP/$f" 2>/dev/null; then changed="$changed $f"; cp "$SRC/$f" "$APP/$f"; fi
 done
 chmod +x "$APP/deploy/seaweedfs.sh"

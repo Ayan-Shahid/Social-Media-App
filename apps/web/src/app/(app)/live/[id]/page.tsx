@@ -1,4 +1,5 @@
 "use client";
+import { ErrorState } from "@/components/ErrorState";
 import Link from "next/link";
 import { use, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -8,7 +9,7 @@ import { timeAgo } from "@/lib/dates";
 import type { LiveStream } from "@/lib/types";
 import { LiveBadge, LiveOverlay, LivePlayer, useLiveRoom } from "@/components/Live";
 import { CloseIcon, SoundIcon } from "@/components/icons";
-import { Avatar, Empty, Spinner } from "@/components/ui";
+import { Avatar, Spinner } from "@/components/ui";
 
 export default function WatchLivePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -21,7 +22,8 @@ export default function WatchLivePage({ params }: { params: Promise<{ id: string
   const room = useLiveRoom(id, onEnded);
 
   if (q.isPending) return <div className="flex justify-center py-20"><Spinner /></div>;
-  if (q.isError) return <Empty title="Live video not available">It may have ended, or the account is private.</Empty>;
+  if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching}
+    notFound={{ title: "Live video not available", body: "It may have ended, or it's from a private account you don't follow." }} />;
   const s = q.data.stream;
   const over = ended || s.status === "ended";
 

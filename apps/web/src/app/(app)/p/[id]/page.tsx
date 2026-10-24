@@ -1,4 +1,5 @@
 "use client";
+import { ErrorState } from "@/components/ErrorState";
 import Link from "next/link";
 import { use, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -11,7 +12,7 @@ import { useSession } from "@/lib/session";
 import { LikeButton, PostMedia, RepostButton, SaveButton, ShareButton } from "@/components/PostCard";
 import { RichText } from "@/components/RichText";
 import { Button } from "@/components/Button";
-import { Avatar, Empty, ErrorText, Spinner, UserLink } from "@/components/ui";
+import { Avatar, ErrorText, Spinner, UserLink } from "@/components/ui";
 import { HeartIcon, RepostIcon, TrashIcon } from "@/components/icons";
 
 export default function PostPage({ params }: { params: Promise<{ id: string }> }) {
@@ -40,7 +41,8 @@ export default function PostPage({ params }: { params: Promise<{ id: string }> }
   });
 
   if (post.isPending) return <div className="flex justify-center py-20"><Spinner /></div>;
-  if (post.isError) return <Empty title="Post not found">It may have been deleted.</Empty>;
+  if (post.isError) return <ErrorState error={post.error} onRetry={() => post.refetch()} retrying={post.isFetching}
+    notFound={{ title: "Post not found", body: "It may have been deleted, or it's from a private account you don't follow." }} />;
   const p = post.data.post;
   const mine = me?.id === p.author.id;
 
@@ -60,6 +62,7 @@ export default function PostPage({ params }: { params: Promise<{ id: string }> }
         {p.caption && <p className="border-b border-rule py-4 text-[15px] whitespace-pre-wrap break-words"><RichText text={p.caption} /></p>}
         <ul className="flex-1 space-y-4 overflow-y-auto py-4 lg:max-h-[50vh]">
           {comments.isPending && <Spinner />}
+          {comments.isError && <li><ErrorState compact error={comments.error} onRetry={() => comments.refetch()} retrying={comments.isFetching} /></li>}
           {comments.data?.length === 0 && <li className="text-[14px] text-graphite">No comments yet.</li>}
           {comments.data?.map((c) => <CommentRow key={c.id} c={c} postId={id} />)}
         </ul>

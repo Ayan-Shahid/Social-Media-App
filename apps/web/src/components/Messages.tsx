@@ -1,6 +1,7 @@
 "use client";
 // Direct and group chats, end-to-end encrypted in the browser (DECISIONS.md D7).
 // The server stores ciphertext and wrapped group keys only; everything here decrypts locally.
+import { ErrorState } from "./ErrorState";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -15,7 +16,7 @@ import { useSession } from "@/lib/session";
 import type { Conversation, EncryptedMessage, User } from "@/lib/types";
 import { Button } from "./Button";
 import { MessageBody } from "./MessageBody";
-import { Avatar, Empty, ErrorText, Spinner } from "./ui";
+import { Avatar, ErrorText, Spinner } from "./ui";
 import { BackIcon, CloseIcon, LockIcon, PlusIcon, SendIcon, UsersIcon } from "./icons";
 
 const MAX_GROUP = 32;
@@ -41,6 +42,7 @@ export function ConversationList({ activeId }: { activeId?: string }) {
   const directIds = q.data?.flatMap((c) => (c.otherUser ? [c.otherUser.id] : [])) ?? [];
   const isOnline = usePresence(directIds);
   if (q.isPending) return <div className="p-6"><Spinner /></div>;
+  if (q.isError && !q.data) return <div className="p-4"><ErrorState compact error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} /></div>;
   if (!q.data?.length) return <p className="p-5 text-[14px] text-graphite">No conversations yet. Open someone&apos;s profile and tap Message, or start a group.</p>;
   return (
     <ul>
@@ -186,7 +188,8 @@ export function Thread({ id }: { id: string }) {
   const ordered = useMemo(() => msgs.data ?? [], [msgs.data]);
   const byId = useMemo(() => new Map(c?.members.map((m) => [m.user.id, m.user]) ?? []), [c]);
 
-  if (conv.isError) return <div className="grid flex-1 place-items-center p-6"><Empty title="Conversation not found" /></div>;
+  if (conv.isError) return <div className="grid flex-1 place-items-center p-6"><ErrorState error={conv.error} onRetry={() => conv.refetch()} retrying={conv.isFetching}
+    notFound={{ title: "Conversation not found", body: "It may have been deleted, or you're not in it." }} /></div>;
   if (!c || !me) return <div className="grid flex-1 place-items-center"><Spinner /></div>;
   const other = c.otherUser;
   const iLeft = !c.myRole;
@@ -241,7 +244,9 @@ export function Thread({ id }: { id: string }) {
       <div className="flex-1 space-y-1.5 overflow-y-auto px-4 py-5">
         {!privateKey ? <KeyGate /> : !isGroup && !theirKey ? (
           <p className="text-center text-[14px] text-graphite">{other?.username} hasn&apos;t set up encrypted messages yet.</p>
-        ) : msgs.isPending || (isGroup && groupKeys.isPending) ? <Spinner /> : (
+        ) : msgs.isPending || (isGroup && groupKeys.isPending) ? <Spinner /> : msgs.isError && !msgs.data ? (
+          <ErrorState compact error={msgs.error} onRetry={() => msgs.refetch()} retrying={msgs.isFetching} />
+        ) : (
           <>
             {ordered.length === 0 && pending.length === 0 && <p className="py-10 text-center text-[14px] text-graphite">Say hi. Messages here are end-to-end encrypted.</p>}
             {ordered.map((m, i) => {
